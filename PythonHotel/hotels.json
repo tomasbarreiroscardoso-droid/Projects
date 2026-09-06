@@ -1,0 +1,45 @@
+[
+  { "#": "Every hotel below carries \"nights\": 2 (checkout = checkin + 2 nights) for this property specifically. Set a hotel's \"nights\" to null, or delete the field entirely, to make that one hotel fall back to the global --nights default (see hotel_rates.py) instead of a fixed number. This entry itself is a comment, not a hotel - it has no \"name\" key, so load_hotels() skips it." },
+  {
+    "name": "Amaria",
+    "hotel_id": "6444eeaa74e1a0a2",
+    "apikey": "fc26985da12de073e9bdc9b211d4f4e1",
+    "channel_key": "974d82150b02b308a6a79ba2f87acad6",
+    "nights": 2
+  },
+  {
+    "name": "Craveiral",
+    "hotel_id": "6a90df52e4240f81",
+    "apikey": "1979030c88f09c6c6626521262c5e7ff",
+    "nights": 1
+  },
+  {
+    "name": "Hortas do Rio",
+    "hotel_id": "ac2a571772d8a7cd",
+    "apikey": "b948ee3b792cca2a7111abfad6153bf7",
+    "channel_key": "58e5de4e971fc00be29aa10492813ad4",
+    "nights": 1
+  },
+  {
+    "name": "Praia do Canal",
+    "engine": "dedge",
+    "engine_id": "JRAL",
+    "hotel_id": 24933,
+    "origin": "https://www.praiadocanal.pt",
+    "nights": 2
+  },
+  {
+    "name": "Vale Palheiro",
+    "hotel_id": "d9d3aed39b92e11b",
+    "apikey": "c591968b891e4d7414bf61c860e796ae",
+    "channel_key": "58e5de4e971fc00be29aa10492813ad4",
+    "nights": 1
+  },
+  {
+    "name": "Pensão Agrícola",
+    "engine": "cloudbeds",
+    "widget_property": "161682624164059",
+    "origin": "https://us2.cloudbeds.com",
+    "nights": 2
+  }
+]

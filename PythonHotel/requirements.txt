@@ -1,0 +1,15 @@
+# Python packages this project needs. Installed by ./setup.sh into .venv/
+#
+#     .venv/bin/pip install -r requirements.txt
+#
+# Only direct dependencies are listed; pip pulls the rest (numpy, certifi,
+# urllib3, et_xmlfile, python-dateutil ...) in automatically.
+#
+# The floors are the oldest versions known to work. The exact versions this
+# project was developed and tested against, on Python 3.13.7, were:
+#     requests 2.34.2   pandas 3.0.5   openpyxl 3.1.5
+# To reproduce those exactly, change >= to == below.
+
+requests>=2.31
+pandas>=2.2
+openpyxl>=3.1

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE - do not copy this file to ~/Library/LaunchAgents/ by hand.
+
+  launchd does not expand variables, so every path here must be absolute.
+  The three __PROJECT_DIR__ placeholders below are filled in with wherever
+  this folder actually lives by:
+
+      ./install_schedule.sh
+
+  which writes the finished plist into ~/Library/LaunchAgents/ and loads it.
+  Re-run it after moving the folder. To change the time of day, edit
+  StartCalendarInterval below and run the installer again.
+
+      ./install_schedule.sh            install / reinstall, then load
+      ./install_schedule.sh --status   is it loaded? when did it last run?
+      ./install_schedule.sh --run-now  trigger one run immediately
+      ./install_schedule.sh --remove   unload and delete it
+
+  launchd rather than crontab: cron on macOS needs Full Disk Access granted
+  to /usr/sbin/cron, and a cron job silently skips runs while the Mac is
+  asleep. launchd catches up on the next wake.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomas.hotelrates</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__PROJECT_DIR__/run_daily.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <!-- Daily at 06:30. Hour is 0-23. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <!-- Run at the next opportunity if the Mac was asleep at 06:30. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/output/logs/launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/output/logs/launchd.err</string>
+</dict>
+</plist>

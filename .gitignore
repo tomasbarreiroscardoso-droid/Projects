@@ -1,0 +1,40 @@
+# Repository-wide ignores for Projects-Git.
+#
+# Each project may also carry its own .gitignore (PythonHotel does). Git reads
+# every .gitignore it finds on the way down, so a rule here applies everywhere
+# and a rule in a project's own file applies to that project only. Both are
+# in force at the same time.
+
+# ---- projects not ready to be published yet ------------------------------
+# Excluded on purpose for now. Delete this line to start tracking it.
+PythonStocks/
+
+# ---- Python ---------------------------------------------------------------
+# Virtual environments are machine-specific: they hardcode absolute paths to
+# the folder and to the interpreter they were built from, so a copied one
+# breaks. Each machine recreates its own (PythonHotel: ./setup.sh).
+.venv/
+venv/
+env/
+ENV/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---- editors and OS -------------------------------------------------------
+.DS_Store
+.idea/
+*.swp
+
+# ---- secrets --------------------------------------------------------------
+# Never commit real credentials. PythonHotel's hotels.json is deliberately
+# NOT ignored (the keys in it are published in each hotel's own "Book Now"
+# link), but anything matching these stays out.
+.env
+*.pem
+secrets.json
+credentials.json
