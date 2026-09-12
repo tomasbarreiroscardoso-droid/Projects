@@ -6,8 +6,9 @@ APIs, why availability is calculated the way it is — that is in
 [README.md](README.md).
 
 **What this project does, in one sentence:** every morning it visits each
-hotel's own booking website, writes down what every room costs for the next
-year, and turns the accumulated history into one Excel report.
+hotel's own booking website, writes down what every room costs for the
+coming months (`DAYS_AHEAD` days ahead), and turns the accumulated history
+into one Excel report.
 
 ---
 
@@ -29,13 +30,14 @@ each run is a new file — so a bad run can never destroy history.
 
 | Setting | Line | What it does |
 | --- | --- | --- |
-| `DAYS_AHEAD` | **212** | **The big one.** How many check-in dates ahead to collect. |
-| `NIGHTS` | 217 | Fallback stay length, used only for a hotel that sets no `nights` of its own in `hotels.json`. Currently nothing reaches it. |
-| `ADULTS` / `CHILDREN` | 218–219 | The occupancy to ask prices for. `2` adults, `0` children. |
-| `CURRENCY` / `LANGUAGE` | 220–221 | `EUR`, `en`. |
-| `REQUEST_DELAY` | 223 | Seconds to wait between requests. `0.5` — politeness. Raising it makes runs slower but gentler. |
-| `TIMEOUT` / `MAX_RETRIES` | 224–225 | How long to wait on a slow reply, and how many times to retry. |
-| `HOTELS` | 186 | A built-in property list, **ignored whenever `hotels.json` exists**. Edit the JSON, not this. |
+| `DAYS_AHEAD` | **221** | **The big one.** How many check-in dates ahead to collect. |
+| `NIGHTS` | 226 | Fallback stay length, used only for a hotel that sets no `nights` of its own in `hotels.json`. Currently nothing reaches it. |
+| `PROBE_MIN_STAY` | 259 | `False`. When `True` (or with `--probe-min-stay`), a date that has listings but nothing bookable only because of minimum stay is asked for once more at that minimum. Affected rows are marked `nights_overridden`. |
+| `ADULTS` / `CHILDREN` | 260–261 | The occupancy to ask prices for. `2` adults, `0` children. |
+| `CURRENCY` / `LANGUAGE` | 262–263 | `EUR`, `en`. |
+| `REQUEST_DELAY` | 265 | Seconds to wait between requests. `0.5` — politeness. Raising it makes runs slower but gentler. |
+| `TIMEOUT` / `MAX_RETRIES` | 266–267 | How long to wait on a slow reply, and how many times to retry. |
+| `HOTELS` | 195 | A built-in property list, **ignored whenever `hotels.json` exists**. Edit the JSON, not this. |
 
 ```bash
 ./.venv/bin/python hotel_rates.py               # a normal full run
@@ -43,43 +45,53 @@ each run is a new file — so a bad run can never destroy history.
 ./.venv/bin/python hotel_rates.py --days 2 --raw    # also save the raw JSON
 ./.venv/bin/python hotel_rates.py --hotels other.json   # a different list
 ./.venv/bin/python hotel_rates.py --price total_price   # grids show stay total
+./.venv/bin/python hotel_rates.py --probe-min-stay      # retry min-stay-blocked dates
 ./.venv/bin/python hotel_rates.py --help
 ```
 
-`--days` and `--nights` change **one run only**. To change every run, edit
-`DAYS_AHEAD` (line 212) and each hotel's `nights` in `hotels.json`.
+`--days`, `--nights` and `--probe-min-stay` change **one run only**. To
+change every run, edit `DAYS_AHEAD` (line 221), `PROBE_MIN_STAY` (line 259)
+and each hotel's `nights` in `hotels.json`.
+
+> **What `--probe-min-stay` does.** Some dates return rooms where every offer
+> needs a longer stay than the hotel's `nights` — so nothing is bookable and
+> the date looks full. With the flag, that one date is asked for again, once,
+> at the shortest stay those offers need. A date that returns nothing at all
+> is never retried. Details: README.md → "Retrying past a minimum stay".
 
 > **How long does a run take?** Roughly `DAYS_AHEAD × hotels ×
-> REQUEST_DELAY`. Work it out from whatever those are set to — at the
-> time of writing that came to about 20 minutes. Use `--days 3` when you
-> are just testing something.
+> REQUEST_DELAY`. Work it out from whatever those are set to — with
+> `DAYS_AHEAD` at 240 that is about 12 minutes of pauses, plus the time each
+> response takes. Use `--days 3` when you are just testing something.
 
 #### `build_report.py` — **builds the Excel report**
 
 Reads every workbook `hotel_rates.py` has ever written and produces one
 polished `output/report_<date>.xlsx`: KPI summary, two charts, six
-hotels × dates tables, a trend comparison, and optional per-room price
-grids. This is the file that produces the thing you actually open and show
-to people.
+hotels × dates tables, a trend comparison, optional per-room price grids,
+and a **Number of rooms** sheet showing how many rooms each hotel is counted
+as having. This is the file that produces the thing you actually open and
+show to people.
 
 It never touches the network — it only reads what is already in `output/`,
 so it is safe to run as many times as you like.
 
 | Setting | Line | What it does |
 | --- | --- | --- |
-| `REPORT_DAYS` | **192** | **The big one.** How many check-in date columns wide every TABLE is. |
-| `CHART_DAYS` | 194 | How many date columns the two CHARTS draw. Kept below `REPORT_DAYS` on purpose — a line across a whole year is unreadable. |
-| `SUMMARY_DAYS` | 196 | The near-term window averaged into the Summary KPIs and the trend comparison. |
-| `TREND_ANCHOR_DAYS` | 197 | How far back the trend comparison looks. Add an entry and it grows a section; headings follow automatically. |
-| `INCLUDE_ADVERTISED_PRICES` | 206 | `True`/`False`. Show the per-room "what it costs right now" grids. |
-| `INCLUDE_ESTIMATED_SALES` | 207 | `True`/`False`. Show the per-room inferred-sold-price grids. Off by default. |
-| `REFERENCE_HOTEL` | 247 | Which hotel sorts first and is highlighted everywhere as the baseline. `"Vale Palheiro"`. |
-| `ACCENT` | 218 | The report's main colour. |
-| `ACCENT_ADVERTISED` / `ACCENT_SALES` | 236 / 230 | The two optional sections' header colours. |
-| `CHART_HEIGHT_CM` / `CHART_WIDTH_CM` | 291–292 | Size of the two charts, in centimetres. |
-| `BIG_MOVE` / `BIG_MOVE_PP` | 260 / 275 | How large a change has to be before a cell is coloured. The captions in the report quote whatever you set here. |
-| `DATE_COL_WIDTH` / `LABEL_COL_WIDTH` | 286–287 | Column widths. |
-| `METRICS` | 325 | The five hotels × dates tables, their number formats, and their explanatory captions. |
+| `REPORT_DAYS` | **200** | **The big one.** How many check-in date columns wide every TABLE is. |
+| `CHART_DAYS` | 202 | How many date columns the two CHARTS draw. Kept below `REPORT_DAYS` on purpose — a line across a whole year is unreadable. |
+| `SUMMARY_DAYS` | 204 | The near-term window averaged into the Summary KPIs and the trend comparison. |
+| `TREND_ANCHOR_DAYS` | 205 | How far back the trend comparison looks. Add an entry and it grows a section; headings follow automatically. |
+| `ROOM_COUNT_MIN_DAYS` | 225 | `20`. How many dates with listings a hotel needs in the latest run before its room count is read from that run. Below it, the count uses all history instead. See "How does the report know how many rooms a hotel has?" below. |
+| `INCLUDE_ADVERTISED_PRICES` | 234 | `True`/`False`. Show the per-room "what it costs right now" grids. |
+| `INCLUDE_ESTIMATED_SALES` | 235 | `True`/`False`. Show the per-room inferred-sold-price grids. Off by default. |
+| `REFERENCE_HOTEL` | 275 | Which hotel sorts first and is highlighted everywhere as the baseline. `"Vale Palheiro"`. |
+| `ACCENT` | 246 | The report's main colour. |
+| `ACCENT_ADVERTISED` / `ACCENT_SALES` | 264 / 258 | The two optional sections' header colours. |
+| `CHART_HEIGHT_CM` / `CHART_WIDTH_CM` | 319–320 | Size of the two charts, in centimetres. |
+| `BIG_MOVE` / `BIG_MOVE_PP` | 288 / 303 | How large a change has to be before a cell is coloured. The captions in the report quote whatever you set here. |
+| `DATE_COL_WIDTH` / `LABEL_COL_WIDTH` | 314–315 | Column widths. |
+| `METRICS` | 353 | The five hotels × dates tables, their number formats, and their explanatory captions. |
 
 ```bash
 ./.venv/bin/python build_report.py                       # normal
@@ -150,7 +162,7 @@ window, run the script by hand with the flag instead of adding it here.
 | `install_schedule.sh` | Installs, checks, triggers or removes the daily scheduled job. |
 | `com.tomas.hotelrates.plist` | A **template** for that job, holding the schedule (06:30 daily, lines 42–45). Do not copy it by hand — `install_schedule.sh` fills in the folder path and installs it. |
 | `requirements.txt` | The three packages needed: `requests`, `pandas`, `openpyxl`. |
-| `.gitignore` | Keeps `.venv/`, `output/` and `__pycache__/` out of version control. |
+| `.git/info/exclude` | In the repository root (`Projects/`), not this folder. The ignore rules: keeps `.venv/`, `output/` and `__pycache__/` out of version control. Local to this Mac and never pushed — there is no `.gitignore`. |
 | `output/` | Everything produced. `hotel_rates_<stamp>.xlsx` = one scrape; `report_<date>.xlsx` = the readable report. |
 | `output/room_registry.json` | Every room ever seen, remembered across runs — so a room that sells out for months is still counted, not silently forgotten. |
 | `output/logs/` | One log per day from the scheduled run. First place to look when something did not happen. |
@@ -171,10 +183,11 @@ window, run the script by hand with the flag instead of adding it here.
 ./.venv/bin/python price_report.py --xlsx out.xlsx availability   # to a file
 ```
 
-Its own settings worth knowing: `HOTEL_CAPACITY` (line 393) — the true room
+Its own settings worth knowing: `HOTEL_CAPACITY` (line 407) — the true room
 count for a hotel, when you know it, overriding the figure inferred from the
-data; and `MAX_GAP_DAYS` (line 679), how far apart two runs can be before an
-estimated sale is downgraded to low confidence.
+data (a room type set to `0` stops counting altogether); and `MAX_GAP_DAYS`
+(line 756), how far apart two runs can be before an estimated sale is
+downgraded to low confidence.
 
 ---
 
@@ -298,7 +311,7 @@ bash setup.sh
 
 ### Step 4 — Collect some data
 
-Start small, so you find out in 30 seconds rather than 20 minutes if
+Start small, so you find out in 30 seconds rather than a quarter of an hour if
 something is wrong:
 
 ```bash
@@ -422,7 +435,7 @@ it hardcodes absolute paths to the folder it was built in and to the exact
 Python it was built from, so a copied one looks fine but fails in confusing
 ways — and an Intel-built one cannot work on Apple Silicon at all. That is
 precisely what `requirements.txt` and `setup.sh` exist for, and why
-`.gitignore` excludes `.venv/`.
+`.venv/` is kept out of git.
 
 **Does this work on Windows?**
 The three Python files do — they use no macOS-specific code. The four
@@ -434,28 +447,63 @@ requirements.txt`, and use **Task Scheduler** instead of
 works except `install_schedule.sh` (use `cron`, calling `run_daily.sh`).
 
 **What do I put on GitHub?**
-Everything except what `.gitignore` already excludes — `hotels.json`
-included. Its `apikey` values are public by design: each is published in that
-hotel's own "Book Now" link, readable by any visitor, and that is where they
-were captured from. They allow the same read-only availability search a
-browser already makes, so a public repository is fine. Genuinely private
-files (`.env`, `*.pem`, `secrets.json`, `credentials.json`) are ignored at
-the repository root and should stay that way.
+Everything except what the ignore rules exclude — `hotels.json` included.
+Its `apikey` values are public by design: each is published in that hotel's
+own "Book Now" link, readable by any visitor, and that is where they were
+captured from. They allow the same read-only availability search a browser
+already makes, so a public repository is fine. Genuinely private files
+(`.env`, `*.pem`, `secrets.json`, `credentials.json`) are ignored and should
+stay that way.
 
-`output/` is excluded too, which means a fresh clone starts with no price
+The ignore rules are **not** in a `.gitignore`. They live in
+`.git/info/exclude` at the repository root (`Projects/`), which git never
+pushes — so they only exist on this Mac. On a fresh clone, copy those lines
+into the new `.git/info/exclude` before running `git add`, or `.venv/` and
+`output/` will be picked up.
+
+`output/` is excluded, which means a fresh clone starts with no price
 history. That is usually what you want — it is large, regenerated daily, and
-nobody should be merging spreadsheets. If you do want the history to travel,
-delete the `output/` line from `.gitignore`.
+nobody should be merging spreadsheets. To share one particular report
+anyway, add it by name — the ignore rule stays as it is:
+
+```bash
+git add -f PythonHotel/output/report_20260913.xlsx
+```
+
+After that git tracks that one file, so rebuilding it later shows up as a
+change to commit.
 
 **How do I change how far ahead it looks?**
-`DAYS_AHEAD` on line 212 of `hotel_rates.py` (what gets collected) and
-`REPORT_DAYS` on line 192 of `build_report.py` (how wide the tables are).
+`DAYS_AHEAD` on line 221 of `hotel_rates.py` (what gets collected) and
+`REPORT_DAYS` on line 200 of `build_report.py` (how wide the tables are).
 Change them and everything follows — the report's own headings and
 captions are generated from the constants, so nothing will still be
 claiming the old number. `run_daily.sh` passes no day count of its own.
 
 **How do I change a hotel's stay length?**
 Its `"nights"` in `hotels.json`. Nowhere else.
+
+**How does the report know how many rooms a hotel has?**
+No booking engine says, so the report works it out from the latest run. For
+each room type it takes the most units that room showed on any date of the
+run, then adds those up per hotel. That total is what Availability % and
+Occupancy % divide by.
+
+- A room the latest run never listed counts **0**. So a room a hotel stops
+  selling, or re-lists under a new code, stops counting on the very next run.
+  It still has a row in the report, because `room_registry.json` never
+  deletes anything.
+- If a hotel had listings on fewer than `ROOM_COUNT_MIN_DAYS` dates (line 225
+  of `build_report.py`, default 20), one run is too little to go on. That
+  hotel uses the most units ever recorded across all runs instead. A short
+  test run like `--days 3` will do this for every hotel.
+- The same count is used for every run inside one report, so "vs 7 days ago"
+  compares rooms sold, not a changed room count.
+
+The **Number of rooms** sheet in the report shows the count for every room,
+and which method each hotel used. If you know a hotel's real number, set
+`HOTEL_CAPACITY` in `price_report.py` and it wins. Details: README.md →
+"Availability counts rooms, not room types".
 
 **Something broke — what do I try first?**
 

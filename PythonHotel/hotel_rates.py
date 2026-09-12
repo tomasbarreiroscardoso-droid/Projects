@@ -31,6 +31,8 @@ WHAT ONE RUN DOES
         for each check-in date in the window:
             ask for a `nights`-long stay for `ADULTS` adults
             flatten the response into tidy rows
+            with --probe-min-stay: if rooms came back but none bookable only
+                because of min_stay, ask once more at that min_stay
             record that the date was queried, even if nothing came back
     write everything to output/hotel_rates_<stamp>.xlsx
 
@@ -50,6 +52,8 @@ SHEETS PRODUCED
     coverage   one row per date actually queried, with how many offers came
                back. Without it a sold-out date leaves no trace and any
                availability figure silently reports 100%.
+               `nights_overridden` marks a date re-asked at a longer stay
+               (--probe-min-stay); its `data` rows carry the same flag.
     <rate>     one wide grid per rate plan (rooms x dates), for eyeballing.
     BestPrice  wide grid of the lowest rate per room/date.
 
@@ -86,7 +90,7 @@ Usage:
 #     $PY hotel_rates.py --days 2 --raw            # dump JSON to inspect
 #     $PY hotel_rates.py --hotels other.json       # different property list
 #     flags: --days --nights --out --price {nightly_price,total_price}
-#            --raw --hotels
+#            --raw --hotels --probe-min-stay
 #
 # 2. PRESENT   build_report.py  -> output/report_<date>.xlsx
 #     $PY build_report.py                          # uses REPORT_DAYS
@@ -125,6 +129,11 @@ Usage:
 #     NIGHTS          DEFAULT stay length, used only for a hotel whose
 #                     hotels.json entry has no "nights" of its own. Every
 #                     hotel currently sets its own, so this is a fallback.
+#     PROBE_MIN_STAY  OFF by default; --probe-min-stay turns it on for one
+#                     run. When on, a date with real listings but nothing
+#                     bookable purely because of min_stay is retried once at
+#                     the shortest min_stay seen - see the comment above the
+#                     constant for the full rationale.
 #     ADULTS 2 / CHILDREN 0     occupancy asked for
 #     CURRENCY EUR / LANGUAGE en
 #     REQUEST_DELAY 0.5         seconds between requests - politeness
@@ -208,13 +217,46 @@ HOTELS = [
 # for the size of a run - the scheduled job in run_daily.sh passes no --days,
 # so this value is what it uses. `--days N` overrides it for one run only.
 # Cost: roughly DAYS_AHEAD x number of hotels requests, REQUEST_DELAY apart,
-# so 365 days x 6 hotels at 0.5s is about 20 minutes.
-DAYS_AHEAD = 365
+# so 240 days x 6 hotels at 0.5s is about 12 minutes of pauses alone.
+DAYS_AHEAD = 240
 
 # Default stay length, used ONLY for a hotel whose hotels.json entry has no
 # "nights" of its own (or has "nights": null). A hotel's own value always
 # wins, so today, with every hotel setting one, this changes nothing.
 NIGHTS = 3
+
+# OPT-IN, off by default (--probe-min-stay turns it on for one run) - every
+# existing run, including the scheduled one, is byte-for-byte unaffected until
+# this is deliberately switched on.
+#
+# THE PROBLEM: a date can come back with real listings where NOT ONE rate
+# plan is bookable, purely because its own min_stay is longer than the stay
+# just queried. Confirmed live on Craveiral, 2026-10-08: 3 rooms, 13 offers,
+# every one non-bookable, min_stay ranging 2-7 nights against a 1-night query
+# - the hotel's own configured nights in hotels.json. Left alone, that date
+# reports 0% occupancy even though rooms are genuinely on sale, just not at
+# the length queried.
+#
+# THIS IS NOT THE SAME as a genuinely empty response (`room_rates: []` - a
+# sold-out date, or the property simply closed that day, confirmed on Amaria
+# 2026-12-23). An empty response carries no min_stay signal at all, so there
+# is nothing to retry with and nothing to learn from trying anyway - that case
+# is deliberately never probed, on purpose, so a hotel's quiet dates never
+# cost extra requests for no benefit.
+#
+# THE FIX, when triggered: retry that ONE date exactly once, at the shortest
+# min_stay any of the non-bookable offers reported. Whatever that second
+# attempt returns - bookable or not - replaces the first attempt's rows for
+# that date, so no two rows for the same date/rate plan can ever collide on
+# price_report.py's KEY (which does not include `nights`). If the retry comes
+# back with nothing at all, the original rows are kept instead. Never retried
+# a second time - a room that still isn't bookable at its own advertised
+# min_stay is left as-is rather than guessed at further. Every affected row is
+# marked `nights_overridden` in both the `data` and `coverage` sheets, so a
+# report can tell a probed row (a different stay length, not directly
+# comparable on price) apart from an ordinary one. See README.md ->
+# "Minimum-stay visibility".
+PROBE_MIN_STAY = False
 ADULTS = 2
 CHILDREN = 0
 CURRENCY = "EUR"
@@ -1002,7 +1044,8 @@ def parse_cloudbeds(payload, hotel_name, checkin, checkout, registry, scraped_at
 # ==========================================================================
 
 TIDY_COLUMNS = [
-    "hotel", "checkin", "checkout", "nights", "occupancy_bucket",
+    "hotel", "checkin", "checkout", "nights", "nights_overridden",
+    "occupancy_bucket",
     "room_type_code", "room_name", "rate_plan_code", "rate_plan_name",
     "meal_plan", "nightly_price", "total_price", "original_price",
     "currency", "is_bookable", "best_offer", "min_availability",
@@ -1050,11 +1093,12 @@ def write_coverage_sheet(wb, coverage):
     asked about, and any availability metric silently reports 100%.
     """
     ws = wb.create_sheet("coverage")
-    cols = ["hotel", "checkin", "checkout", "nights", "offers", "rooms_offered", "scraped_at"]
+    cols = ["hotel", "checkin", "checkout", "nights", "nights_overridden",
+            "offers", "rooms_offered", "scraped_at"]
     ws.append(cols)
     for c in coverage:
         ws.append([c.get(k) for k in cols])
-    _freeze_and_size(ws, [20, 14, 14, 8, 8, 14, 20])
+    _freeze_and_size(ws, [20, 14, 14, 8, 14, 8, 14, 20])
 
 
 def write_rooms_sheet(wb, registry):
@@ -1171,6 +1215,11 @@ def main(argv=None):
     p.add_argument("--raw", action="store_true", help="also dump raw JSON responses")
     p.add_argument("--hotels", type=Path, default=None,
                    help="JSON file of hotels (default: ./hotels.json if it exists)")
+    p.add_argument("--probe-min-stay", dest="probe_min_stay", action="store_true",
+                   default=PROBE_MIN_STAY,
+                   help="if a date has listings but nothing bookable purely because "
+                        "of min_stay, retry it once at the shortest min_stay seen "
+                        "(off by default; never touches a genuinely empty date)")
     args = p.parse_args(argv)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -1215,15 +1264,40 @@ def main(argv=None):
         # cloudbeds needs neither a session nor a token: each request is a
         # self-contained, unauthenticated POST (see section 5c).
 
+        def fetch_and_parse(checkin, checkout, raw_tag=""):
+            """One fetch + parse for one stay, routed to the hotel's engine.
+
+            Factored out so the PROBE_MIN_STAY retry below can call the exact
+            same path a second time with a different checkout, instead of
+            duplicating the per-engine dispatch.
+            """
+            if engine == "dedge":
+                payload = client.search(checkin, checkout)
+            elif engine == "cloudbeds":
+                payload = fetch_cloudbeds(session, hotel, checkin, checkout)
+            else:
+                payload = fetch_offers(session, hotel, checkin, checkout, auth)
+
+            if args.raw:
+                raw_dir = args.out / "raw" / hotel["name"]
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                (raw_dir / f"{checkin}{raw_tag}.json").write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+                )
+
+            if engine == "dedge":
+                return parse_dedge(payload, hotel["name"], checkin, checkout,
+                                   registry, scraped_at, rate_names)
+            if engine == "cloudbeds":
+                return parse_cloudbeds(payload, hotel["name"], checkin, checkout,
+                                       registry, scraped_at)
+            return parse_offers(payload, hotel["name"], checkin, checkout,
+                                registry, scraped_at)
+
         for i, checkin in enumerate(dates, start=1):
             checkout = checkin + timedelta(days=nights)
             try:
-                if engine == "dedge":
-                    payload = client.search(checkin, checkout)
-                elif engine == "cloudbeds":
-                    payload = fetch_cloudbeds(session, hotel, checkin, checkout)
-                else:
-                    payload = fetch_offers(session, hotel, checkin, checkout, auth)
+                new = fetch_and_parse(checkin, checkout)
             except FetchError as exc:
                 failures += 1
                 print(f"  [{i:>3}/{len(dates)}] {checkin} -> FAILED ({exc})")
@@ -1234,33 +1308,53 @@ def main(argv=None):
                 time.sleep(REQUEST_DELAY)
                 continue
 
-            if args.raw:
-                raw_dir = args.out / "raw" / hotel["name"]
-                raw_dir.mkdir(parents=True, exist_ok=True)
-                (raw_dir / f"{checkin}.json").write_text(
-                    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-                )
+            nights_used, overridden = nights, False
 
-            if engine == "dedge":
-                new = parse_dedge(payload, hotel["name"], checkin, checkout,
-                                  registry, scraped_at, rate_names)
-            elif engine == "cloudbeds":
-                new = parse_cloudbeds(payload, hotel["name"], checkin, checkout,
-                                      registry, scraped_at)
-            else:
-                new = parse_offers(payload, hotel["name"], checkin, checkout,
-                                   registry, scraped_at)
+            # PROBE_MIN_STAY (--probe-min-stay): listings came back but NOT ONE
+            # is bookable, and at least one names a min_stay longer than what
+            # was just queried - the Craveiral 2026-10-08 pattern. A genuinely
+            # empty response (`new` is []) never reaches here, so a sold-out
+            # or closed date is never retried - see the constant's comment.
+            if args.probe_min_stay and new and not any(r["is_bookable"] for r in new):
+                needs_more = [r["min_stay"] for r in new
+                             if r["min_stay"] is not None and r["min_stay"] > nights]
+                if needs_more:
+                    retry_nights = int(min(needs_more))
+                    print(f"  ~ {checkin}: {len(new)} offer(s), none bookable at "
+                          f"{nights}n (shortest min_stay seen: {retry_nights}n) - "
+                          f"retrying at {retry_nights}n")
+                    retried = None
+                    try:
+                        retried = fetch_and_parse(
+                            checkin, checkin + timedelta(days=retry_nights),
+                            raw_tag=f"_retry{retry_nights}n")
+                    except FetchError as exc:
+                        print(f"  ! retry at {retry_nights}n failed ({exc}); "
+                              f"keeping the {nights}n result")
+                    time.sleep(REQUEST_DELAY)
+                    if retried:
+                        new, nights_used, overridden = retried, retry_nights, True
+                    else:
+                        print(f"  ~ {checkin}: retry found nothing bookable either; "
+                              f"giving up rather than trying an even longer stay")
+
+            for r in new:
+                r["nights_overridden"] = overridden
+
             records.extend(new)
             coverage.append({
                 "hotel": hotel["name"],
                 "checkin": checkin.isoformat(),
-                "checkout": checkout.isoformat(),
-                "nights": nights,
+                "checkout": (checkin + timedelta(days=nights_used)).isoformat(),
+                "nights": nights_used,
+                "nights_overridden": overridden,
                 "offers": len(new),
                 "rooms_offered": len({r["room_type_code"] for r in new}),
                 "scraped_at": scraped_at,
             })
             status = f"{len(new):>3} offers" if new else "  no availability"
+            if overridden:
+                status += f" (at {nights_used}n, overridden)"
             print(f"  [{i:>3}/{len(dates)}] {checkin} -> {status}")
             time.sleep(REQUEST_DELAY)
 

@@ -29,6 +29,10 @@ WHAT IT PRODUCES
                     section 0b and each in its own colour: advertised prices
                     (what is on sale now) and estimated sold prices
                     (inferred from stock drops, not published anywhere)
+    Number of rooms
+                the room count behind every Availability % / Occupancy %
+                figure, per hotel and per room, next to the units each room
+                showed on each check-in date of the latest run.
     Data …      three copies of the tidy `data` rows: the latest run, the run
                 before it, and the 7th most recent - for drilling into any
                 number the summary raises a question about.
@@ -69,7 +73,7 @@ Usage:
 #     $PY hotel_rates.py --days 2 --raw            # dump JSON to inspect
 #     $PY hotel_rates.py --hotels other.json       # different property list
 #     flags: --days --nights --out --price {nightly_price,total_price}
-#            --raw --hotels
+#            --raw --hotels --probe-min-stay
 #
 # 2. PRESENT   build_report.py  -> output/report_<date>.xlsx
 #     $PY build_report.py                          # uses REPORT_DAYS
@@ -106,6 +110,9 @@ Usage:
 #     CHART_DAYS                check-in date columns in the two CHARTS
 #                               (section 0). Smaller than REPORT_DAYS on
 #                               purpose; the smaller of the two wins.
+#     ROOM_COUNT_MIN_DAYS       dates with listings a hotel needs in the
+#                               latest run before its room count is read
+#                               from that run alone (section 0a)
 #
 # (section 0b, OPTIONAL SECTIONS)
 #     INCLUDE_ADVERTISED_PRICES / INCLUDE_ESTIMATED_SALES
@@ -130,8 +137,9 @@ Usage:
 #                               percentage points
 #     SUMMARY_COLS / SALES_SUMMARY_COLS / COMPARISON_COLS   table columns
 #
-# Availability weights each room type by its physical room count. The true
-# capacity per hotel lives in HOTEL_CAPACITY in price_report.py.
+# Availability weights each room type by its physical room count, read off
+# the latest run (section 0a, and the "Number of rooms" sheet) unless
+# HOTEL_CAPACITY in price_report.py sets the true number.
 # ==========================================================================
 
 from __future__ import annotations
@@ -195,6 +203,26 @@ CHART_DAYS = 90    # date columns drawn in the two charts (see above)
 
 SUMMARY_DAYS = 30            # near-term window behind the Summary KPIs
 TREND_ANCHOR_DAYS = (7, 30)  # recent-trend comparison looks back this far
+
+# ==========================================================================
+# 0a. ROOM COUNT
+# --------------------------------------------------------------------------
+# Availability % and Occupancy % divide by how many rooms a hotel has, which
+# no booking engine publishes. It is read off the LATEST run: per room type,
+# the most units it showed on any check-in date that run queried, summed per
+# hotel. A room type the latest run never listed counts 0, so a room a hotel
+# retires, downsizes or renumbers is reflected on the very next run.
+#
+# That only works if the run saw enough dates. A hotel with listings on
+# fewer than ROOM_COUNT_MIN_DAYS dates in the latest run - a short --days
+# run, or a property closed for most of the window - falls back to the most
+# units ever recorded across the whole history, the report's old method.
+#
+# The count is taken ONCE per report and used for every run in it - latest,
+# previous and each trend anchor - so a change between two runs is never
+# partly a change in room count. The "Number of rooms" sheet itemises it.
+# ==========================================================================
+ROOM_COUNT_MIN_DAYS = 20
 
 # ==========================================================================
 # 0b. OPTIONAL SECTIONS
@@ -330,8 +358,9 @@ METRICS = [
      "fullest), red on its emptiest.",
      "occupancy"),
     ("availability", "Availability %", PCT_FMT,
-     "Physical rooms on sale divided by the hotel's total rooms, so a "
-     "12-unit category counts for more than a 1-unit one. Green text: "
+     "Physical rooms on sale divided by the hotel's total rooms (see the "
+     "'Number of rooms' sheet), so a 12-unit category counts for more than "
+     "a 1-unit one. Green text: "
      "less available than Vale Palheiro that day (fuller, better). Vale "
      "Palheiro's own cell fills green on its best day, red on its worst.",
      "availability"),
@@ -372,9 +401,13 @@ def hotel_order(names) -> list[str]:
     return sorted(names, key=lambda n: (priority.get(n, 2), n.casefold()))
 
 
-def metrics_for_run(df, rooms, coverage, run_date, dates) -> dict[str, pd.DataFrame]:
+def metrics_for_run(df, rooms, coverage, run_date, dates, cap) -> dict[str, pd.DataFrame]:
     """The four METRICS tables for one run, plus a fifth ("min_stay", not in
     METRICS - see write_min_stay_table) - hotels (rows) x `dates` (columns).
+
+    `cap` is the room count per (hotel, room_type_code) from
+    price_report.run_capacity. build() passes the same one for every run it
+    measures (see ROOM_COUNT_MIN_DAYS).
     """
     hotels = hotel_order(df["hotel"].unique())
     blank = pd.DataFrame(index=hotels, columns=dates, dtype="float64")
@@ -389,11 +422,16 @@ def metrics_for_run(df, rooms, coverage, run_date, dates) -> dict[str, pd.DataFr
     if grid.empty:
         return out
 
-    # Weight each room type by how many physical rooms it holds. Capacity is
-    # inferred from the WHOLE history (`df`), not this one run, so the
+    # Weight each room type by how many physical rooms it holds. `cap` spans
+    # the latest run's whole date window, not just the `dates` shown, so the
     # denominator does not shrink on a day the property is nearly full.
-    grid = grid.merge(pr.capacity(df), on=["hotel", "room_type_code"], how="left")
-    grid["capacity"] = grid["capacity"].fillna(1.0)
+    grid = grid.merge(cap[["hotel", "room_type_code", "capacity"]],
+                      on=["hotel", "room_type_code"], how="left")
+    # An older run measured against today's count can show more units than
+    # today's count allows - Villa Terracotta was on sale on 2026-09-04 but
+    # counts 0 now. Cap them, so availability stays within 100% and a room
+    # no longer counted adds nothing to any run.
+    grid["units"] = grid["units"].clip(upper=grid["capacity"])
 
     units = grid.pivot_table(index="hotel", columns="checkin",
                              values="units", aggfunc="sum")
@@ -799,24 +837,23 @@ def _horizon(table, dates, days=SUMMARY_DAYS):
     return table[[d for d in dates[:days] if d in table.columns]]
 
 
-def rooms_known(rooms: pd.DataFrame | None, df: pd.DataFrame, hotel: str) -> int | None:
-    """How many physical rooms the scraper believes this hotel has.
+def rooms_known(cap: pd.DataFrame, hotel: str) -> int | None:
+    """How many physical rooms this hotel is counted as having.
 
     This is the denominator behind Availability %, so showing it next to
     "Rooms on sale" makes the percentage self-explanatory: 1 of 51 reads very
     differently from 1 of 7. Counting room *types* here would understate it
-    badly - Praia do Canal has 7 types but ~51 rooms - so it uses the
-    inferred capacity (price_report section 4b) instead.
+    badly - Praia do Canal has 7 types but ~55 rooms - so it sums the same
+    `cap` every table uses (see ROOM_COUNT_MIN_DAYS), itemised per room on
+    the Number of rooms sheet.
     """
-    if df is None or df.empty:
+    counts = cap.loc[cap["hotel"] == hotel, "capacity"]
+    if counts.empty:
         return None
-    caps = pr.capacity_by_hotel(df)
-    if hotel in caps.index:
-        return int(round(float(caps.loc[hotel])))
-    return None
+    return int(round(float(counts.sum())))
 
 
-def write_summary(ws, row, cur, prev, dates, hotels, rooms=None, df=None,
+def write_summary(ws, row, cur, prev, dates, hotels, cap=None,
                   nights_config=None, excluded=None) -> int:
     for i, (name, width) in enumerate(SUMMARY_COLS, start=1):
         cell = ws.cell(row=row, column=i, value=name)
@@ -858,7 +895,7 @@ def write_summary(ws, row, cur, prev, dates, hotels, rooms=None, df=None,
             lo.median(skipna=True) if len(lo) else None,
             hi.max(skipna=True) if len(hi) else None,
             rm.max(skipna=True) if len(rm) else None,
-            rooms_known(rooms, df, hotel) if df is not None else None,
+            rooms_known(cap, hotel) if cap is not None else None,
             int(av.notna().sum()) if len(av) else 0,
             nights_value,
             warning,
@@ -1109,6 +1146,127 @@ def rooms_known_names(rooms, df, hotel) -> list:
 
 
 # ==========================================================================
+# 4c. NUMBER OF ROOMS SHEET
+# --------------------------------------------------------------------------
+# The room count behind every Availability % / Occupancy % figure, laid out
+# so it can be checked by eye. One block per hotel: its known rooms down the
+# side, in column B the count each room is given in the maths, then the units
+# that room showed on each check-in date of the latest run. The block's header
+# row carries the hotel's total in column B - the Summary's "Rooms known".
+#
+# Rooms come from the registry, which never forgets, so a retired room keeps
+# its row - it just reads 0 in column B and has no date cells filled.
+# ==========================================================================
+
+ROOMS_SHEET = "Number of rooms"
+COUNT_COL_WIDTH = 11
+
+
+def write_room_count_sheet(wb, df, cap, rooms, latest, dates, hotels) -> None:
+    ws = wb.create_sheet(ROOMS_SHEET)
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "C1"   # room names and counts stay put while dates scroll
+    ws.column_dimensions["A"].width = LABEL_COL_WIDTH
+    ws.column_dimensions["B"].width = COUNT_COL_WIDTH
+    for i in range(len(dates)):
+        ws.column_dimensions[get_column_letter(3 + i)].width = DATE_COL_WIDTH
+    width = 2 + len(dates)
+
+    ws["A1"] = ROOMS_SHEET
+    ws["A1"].font = TITLE_FONT
+    ws["A2"] = (f"Latest run {pd.Timestamp(latest):%d %b %Y}. Date cells: units the "
+                "booking engine reported for that room and check-in date, bookable "
+                "or not - blank means the room was not listed that date.")
+    ws["A2"].font = SUB_FONT
+    ws["A3"] = ("Column B: the room count used for Availability % and Occupancy % "
+                "throughout the Report sheet, for every run compared there. "
+                "'Latest run': the most units the room showed on any date of the "
+                f"latest run, including dates beyond the {len(dates)} shown - 0 if "
+                f"never listed. A hotel with listings on fewer than "
+                f"{ROOM_COUNT_MIN_DAYS} dates (ROOM_COUNT_MIN_DAYS) uses 'all "
+                "history' instead: the most units ever recorded for the room.")
+    ws["A3"].font = SUB_FONT
+    row = 5
+
+    run = df[df["scraped_date"] == latest]
+    shown = (run.assign(room_type_code=run["room_type_code"].astype(str),
+                        units=run["min_availability"].fillna(1))
+                .groupby(["hotel", "room_type_code", "checkin"])["units"].max()
+                .to_dict())
+
+    names = {}
+    if rooms is not None and not rooms.empty:
+        names = {(r.hotel, str(r.room_type_code)): r.name
+                 for r in rooms.itertuples(index=False)}
+    seen = df.drop_duplicates(["hotel", "room_type_code"], keep="last")
+    for r in seen[["hotel", "room_type_code", "room_name"]].itertuples(index=False):
+        names.setdefault((r.hotel, str(r.room_type_code)), r.room_name)
+
+    center = Alignment(horizontal="center")
+    muted = Font(size=10, color=MUTED)
+    for hotel in hotels:
+        h = cap[cap["hotel"] == hotel]
+        if h.empty:
+            continue
+        listed = int(h["dates_with_listings"].iloc[0])
+        if h["basis"].iloc[0] == "latest run":
+            basis = f"latest run, listings on {listed} dates"
+        else:
+            basis = (f"all history - latest run had listings on only {listed} "
+                     f"dates, fewer than {ROOM_COUNT_MIN_DAYS}")
+        if hotel in pr.HOTEL_CAPACITY:
+            basis += " - overridden by HOTEL_CAPACITY"
+        row = write_section(ws, row, f"  {hotel.upper()} — {basis}", width=width)
+
+        for col, value in ((1, hotel), (2, float(h["capacity"].sum()))):
+            cell = ws.cell(row=row, column=col, value=value)
+            cell.font = HOTEL_FONT
+            cell.fill = HEAD_FILL
+            cell.border = BOX
+        ws.cell(row=row, column=2).number_format = INT_FMT
+        ws.cell(row=row, column=2).alignment = center
+        for i, d in enumerate(dates):
+            cell = ws.cell(row=row, column=3 + i, value=d.strftime("%d %b"))
+            cell.font = HEAD_FONT
+            cell.alignment = center
+            cell.fill = WEEKEND_FILL if d.weekday() in (5, 6) else HEAD_FILL
+            cell.border = BOX
+        row += 1
+
+        # Rooms are keyed on code, so two codes sharing a name (a renumbered
+        # room) both appear - tagged with their code to tell them apart.
+        labels = {code: str(names.get((hotel, code), f"Room {code}"))
+                  for code in h["room_type_code"]}
+        taken = pd.Series(list(labels.values())).value_counts()
+        for code, count in sorted(zip(h["room_type_code"], h["capacity"]),
+                                  key=lambda pair: labels[pair[0]].casefold()):
+            name = labels[code]
+            if taken[name] > 1:
+                name = f"{name} [{code}]"
+            label = ws.cell(row=row, column=1, value=name)
+            label.font = HOTEL_FONT if count > 0 else muted
+            label.border = BOX
+            total = ws.cell(row=row, column=2, value=float(count))
+            total.font = HOTEL_FONT if count > 0 else muted
+            total.number_format = INT_FMT
+            total.alignment = center
+            total.border = BOX
+            for i, d in enumerate(dates):
+                value = shown.get((hotel, code, d))
+                cell = ws.cell(row=row, column=3 + i)
+                if value is not None and pd.notna(value):
+                    cell.value = float(value)
+                else:
+                    cell.fill = EMPTY_FILL
+                cell.number_format = INT_FMT
+                cell.font = BODY_FONT
+                cell.border = BOX
+                cell.alignment = center
+            row += 1
+        row += 1
+
+
+# ==========================================================================
 # 5. CHARTS
 # --------------------------------------------------------------------------
 # Two line charts, one series per hotel, reading straight from the tables
@@ -1224,10 +1382,12 @@ def add_chart(ws, anchor, title, y_title, first_row, n_hotels, n_dates, header_r
 # so the change formulas and charts can point back at them.
 # ==========================================================================
 
-def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs):
+def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs, cap):
     hotels = hotel_order(df["hotel"].unique())
-    cur = metrics_for_run(df, rooms, coverage, latest, dates)
-    prev = metrics_for_run(df, rooms, coverage, previous, dates) if previous is not None else None
+    # `cap` is measured once, from the latest run, and every run below is
+    # measured against it - see ROOM_COUNT_MIN_DAYS.
+    cur = metrics_for_run(df, rooms, coverage, latest, dates, cap)
+    prev = metrics_for_run(df, rooms, coverage, previous, dates, cap) if previous is not None else None
     nights_config = hotel_nights_config()
     excluded = rooms_excluded_by_min_stay(df, nights_config)
 
@@ -1237,7 +1397,7 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs):
     trend_anchors = []
     for back in TREND_ANCHOR_DAYS:
         anchor = closest_run(runs, pd.Timestamp(latest) - pd.Timedelta(days=back))
-        anchor_cur = (metrics_for_run(df, rooms, coverage, anchor, dates)
+        anchor_cur = (metrics_for_run(df, rooms, coverage, anchor, dates, cap)
                       if anchor is not None else None)
         trend_anchors.append((back, anchor, anchor_cur))
 
@@ -1268,7 +1428,7 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs):
     # --- summary ----------------------------------------------------------
     row = write_section(ws, row, f"  SUMMARY — next {SUMMARY_DAYS} days",
                         width=len(SUMMARY_COLS))
-    row = write_summary(ws, row, cur, prev, dates, hotels, rooms, df,
+    row = write_summary(ws, row, cur, prev, dates, hotels, cap,
                         nights_config, excluded)
 
     # Reserve space for the two (side-by-side) charts; they are added once
@@ -1360,6 +1520,9 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs):
               positions["min_price"][0],
               table=cur["min_price"], dates=dates)
 
+    # --- room count behind availability -----------------------------------
+    write_room_count_sheet(wb, df, cap, rooms, latest, dates, hotels)
+
     # --- raw data sheets --------------------------------------------------
     for label, run in extra_runs:
         sheet = wb.create_sheet(label[:31])
@@ -1424,14 +1587,19 @@ def main(argv=None) -> int:
     if len(runs) > 6:
         extra.append(("Data 7 runs ago", runs[6]))
 
+    cap = pr.run_capacity(df, latest, ROOM_COUNT_MIN_DAYS, rooms)
     out = args.out or args.dir / f"report_{pd.Timestamp(latest):%Y%m%d}.xlsx"
-    n_hotels, n_dates = build(df, rooms, coverage, dates, latest, previous, out, extra)
+    n_hotels, n_dates = build(df, rooms, coverage, dates, latest, previous, out, extra, cap)
 
     print(f"Report written to {out}")
     print(f"  {n_hotels} hotel(s) x {n_dates} dates | latest run "
           f"{pd.Timestamp(latest):%Y-%m-%d}"
           + (f" vs {pd.Timestamp(previous):%Y-%m-%d}" if previous is not None
              else " | no comparison run yet"))
+    fallback = sorted(cap.loc[cap["basis"] != "latest run", "hotel"].unique())
+    print("  Room count read from the latest run"
+          + (f"; all history for {', '.join(fallback)} (listings on fewer than "
+             f"{ROOM_COUNT_MIN_DAYS} dates)" if fallback else " for every hotel"))
     if previous is None:
         print("  Change tables will populate once the scraper runs on a second day.")
     return 0

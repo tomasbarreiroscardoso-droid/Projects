@@ -1,5 +1,5 @@
 [
-  { "#": "Every hotel below carries \"nights\": 2 (checkout = checkin + 2 nights) for this property specifically. Set a hotel's \"nights\" to null, or delete the field entirely, to make that one hotel fall back to the global --nights default (see hotel_rates.py) instead of a fixed number. This entry itself is a comment, not a hotel - it has no \"name\" key, so load_hotels() skips it." },
+  { "#": "Each hotel below sets its own \"nights\" - the stay length (checkout = checkin + nights) queried for that property specifically. Set a hotel's \"nights\" to null, or delete the field entirely, to make that one hotel fall back to the global --nights default (see hotel_rates.py) instead of a fixed number. This entry itself is a comment, not a hotel - it has no \"name\" key, so load_hotels() skips it." },
   {
     "name": "Amaria",
     "hotel_id": "6444eeaa74e1a0a2",

@@ -65,7 +65,7 @@ CLI:
 #     $PY hotel_rates.py --days 2 --raw            # dump JSON to inspect
 #     $PY hotel_rates.py --hotels other.json       # different property list
 #     flags: --days --nights --out --price {nightly_price,total_price}
-#            --raw --hotels
+#            --raw --hotels --probe-min-stay
 #
 # 2. PRESENT   build_report.py  -> output/report_<date>.xlsx
 #     $PY build_report.py                          # uses REPORT_DAYS
@@ -371,21 +371,35 @@ def price_by_checkin(
 # The engines do publish stock - `min_availability` is a real count for
 # Craveiral, Hortas do Rio and Praia do Canal. What none of them publish is
 # the DENOMINATOR: total rooms in the category. So it is inferred as the most
-# ever seen on sale at once, across the whole history:
+# ever seen at once. There are two ways to take that maximum:
 #
-#     capacity(room type) = max(min_availability) over every date and run
+#   capacity()      over EVERY run in the history. Stable, but it never
+#                   forgets. A room sold for a single week (Vale Palheiro's
+#                   Villa Terracotta, seen 2026-09-04 to 09-06 only) counts
+#                   forever, and a hotel that renumbers 9 one-unit villas
+#                   into 3 three-unit room types would count the 9 dead
+#                   codes AND the 3 new ones.
 #
-# That is a floor, not a certainty - a room never simultaneously bookable is
-# invisible. It is self-correcting: the longer the history, the closer it
-# gets. Measured against ground truth it lands close - Craveiral infers 37
-# against ~36 known, Praia do Canal 51 against 54 published.
+#   run_capacity()  over ONE run - every check-in date that run queried. A
+#                   room type the run never listed counts 0, so retired,
+#                   renumbered and downsized rooms drop out on the next run
+#                   by themselves. It relies on the run being wide enough to
+#                   catch each room at full stock somewhere in its window, so
+#                   a hotel with listings on fewer than `min_dates` dates
+#                   falls back to capacity() instead.
 #
-# Because it is a floor, availability can never exceed 100% by construction:
-# today's stock is one of the values the maximum was taken over.
+# build_report.py uses run_capacity() on the latest run. The `availability`
+# CLI report further down still uses capacity().
 #
-# Where the true number is known, put it in HOTEL_CAPACITY and it wins. Give
-# either a plain total for the hotel, or a dict of room_type_code -> units
-# when the split matters.
+# Both count a room's stock whether or not that offer was bookable: a
+# min-stay-blocked offer still reports how many units the room has.
+# Either way the result is an estimate: it misses a room never on sale in the
+# window measured, and reads a little high wherever an engine's own stock
+# count does (Craveiral 38 against ~36 real rooms).
+#
+# Where the true number is known, put it in HOTEL_CAPACITY and it wins over
+# both. Give either a plain total for the hotel, or a dict of
+# room_type_code -> units when the split matters (0 retires a room type).
 # ==========================================================================
 
 #: Known true capacities, overriding what the data infers. Keys are hotel
@@ -395,25 +409,8 @@ HOTEL_CAPACITY: dict[str, int | dict[str, int]] = {
 }
 
 
-def capacity(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFrame:
-    """Units per (hotel, room_type_code): the most ever seen on sale at once.
-
-    Returns columns hotel, room_type_code, capacity. A room type that never
-    reported a count falls back to 1, which is what "it was bookable" means
-    at minimum.
-    """
-    overrides = HOTEL_CAPACITY if overrides is None else overrides
-    sub = df.copy()
-    sub["room_type_code"] = sub["room_type_code"].astype(str)
-
-    # Stock is per room, repeated on every rate plan, so take the max across
-    # plans before taking the max across dates and runs.
-    per = (sub.groupby(["hotel", "room_type_code", "checkin", "scraped_date"])
-              ["min_availability"].max().reset_index())
-    cap = (per.groupby(["hotel", "room_type_code"])["min_availability"]
-              .max().reset_index(name="capacity"))
-    cap["capacity"] = cap["capacity"].fillna(1).clip(lower=1)
-
+def _apply_capacity_overrides(cap: pd.DataFrame, overrides: dict | None) -> pd.DataFrame:
+    """Let HOTEL_CAPACITY entries win over whatever was inferred."""
     for hotel, value in (overrides or {}).items():
         mask = cap["hotel"] == hotel
         if not mask.any():
@@ -433,9 +430,89 @@ def capacity(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFrame:
     return cap
 
 
+def capacity(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFrame:
+    """Units per (hotel, room_type_code): the most ever seen at once, across
+    the whole history.
+
+    Returns columns hotel, room_type_code, capacity. A room type that never
+    reported a count falls back to 1, which is what "it was listed" means
+    at minimum.
+    """
+    overrides = HOTEL_CAPACITY if overrides is None else overrides
+    sub = df.copy()
+    sub["room_type_code"] = sub["room_type_code"].astype(str)
+
+    # Stock is per room, repeated on every rate plan, so take the max across
+    # plans before taking the max across dates and runs.
+    per = (sub.groupby(["hotel", "room_type_code", "checkin", "scraped_date"])
+              ["min_availability"].max().reset_index())
+    cap = (per.groupby(["hotel", "room_type_code"])["min_availability"]
+              .max().reset_index(name="capacity"))
+    cap["capacity"] = cap["capacity"].fillna(1).clip(lower=1)
+    return _apply_capacity_overrides(cap, overrides)
+
+
 def capacity_by_hotel(df: pd.DataFrame, overrides: dict | None = None) -> pd.Series:
-    """Total inferred rooms per hotel - the denominator of availability."""
+    """Total inferred rooms per hotel, across the whole history."""
     return capacity(df, overrides).groupby("hotel")["capacity"].sum()
+
+
+def run_capacity(df: pd.DataFrame, run_date, min_dates: int,
+                 rooms: pd.DataFrame | None = None,
+                 overrides: dict | None = None) -> pd.DataFrame:
+    """Units per (hotel, room_type_code) measured from ONE run (see 4b).
+
+    For each hotel whose run had listings on at least `min_dates` check-in
+    dates: the most units each room type showed on any date of that run, and
+    0 for a known room type the run never listed. Any other hotel falls back
+    to capacity() - too few dates to trust, and a hotel that listed nothing
+    at all (closed, or its scrape failed) says nothing about its size.
+
+    Every room type known for a hotel - from `rooms` (the registry) or the
+    data - gets a row, so a room the latest run never saw reads 0 rather
+    than silently falling back to 1 wherever this table is merged.
+
+    Returns columns hotel, room_type_code, capacity, basis ("latest run" or
+    "all history") and dates_with_listings.
+    """
+    overrides = HOTEL_CAPACITY if overrides is None else overrides
+    sub = df.copy()
+    sub["room_type_code"] = sub["room_type_code"].astype(str)
+    run = sub[sub["scraped_date"] == pd.Timestamp(run_date)]
+    history = capacity(sub, overrides={})
+
+    codes: dict[str, set] = {}
+    for hotel, grp in sub.groupby("hotel"):
+        codes.setdefault(hotel, set()).update(grp["room_type_code"])
+    if rooms is not None and not rooms.empty:
+        for hotel, grp in rooms.groupby("hotel"):
+            codes.setdefault(hotel, set()).update(grp["room_type_code"].astype(str))
+
+    listed = run.groupby("hotel")["checkin"].nunique()
+    frames = []
+    for hotel in sorted(codes):
+        n = int(listed.get(hotel, 0))
+        part = pd.DataFrame({"hotel": hotel, "room_type_code": sorted(codes[hotel])})
+        if n >= min_dates:
+            seen = (run[run["hotel"] == hotel]
+                    .groupby("room_type_code")["min_availability"].max()
+                    .fillna(1).clip(lower=1))
+            part["capacity"] = part["room_type_code"].map(seen).fillna(0.0)
+            part["basis"] = "latest run"
+        else:
+            part = part.merge(history[history["hotel"] == hotel],
+                              on=["hotel", "room_type_code"], how="left")
+            # Known from the registry but never in any data row (e.g. a
+            # catalogue-only room): 1, as the report has always assumed.
+            part["capacity"] = part["capacity"].fillna(1.0)
+            part["basis"] = "all history"
+        part["dates_with_listings"] = n
+        frames.append(part)
+
+    if not frames:
+        return pd.DataFrame(columns=["hotel", "room_type_code", "capacity",
+                                     "basis", "dates_with_listings"])
+    return _apply_capacity_overrides(pd.concat(frames, ignore_index=True), overrides)
 
 
 def room_night_grid(df: pd.DataFrame, rooms: pd.DataFrame | None = None,

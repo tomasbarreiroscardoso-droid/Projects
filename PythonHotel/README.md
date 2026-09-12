@@ -32,7 +32,7 @@ be moved or copied anywhere and still works** — no path is written into any
 script. Two things do not travel:
 
 - **`.venv/`** hardcodes absolute paths to this folder and to the exact
-  Python it was built from, so it is `.gitignore`d and must be recreated on
+  Python it was built from, so it is kept out of git and must be recreated on
   each machine with `./setup.sh`. That is what `requirements.txt` is for.
 - **the installed launchd job**, which needs absolute paths by design. After
   moving the folder, re-run `./install_schedule.sh` to point it at the new
@@ -45,7 +45,18 @@ site, which is exactly where they were captured from. They grant read-only
 access to the same availability search a browser already performs, so this
 repository is fine to make public. What must never be committed is anything
 that is genuinely private — `.env`, `*.pem`, `secrets.json` and
-`credentials.json` are ignored at the repository root for that reason.
+`credentials.json` are ignored for that reason.
+
+**Where the ignore rules live.** There is no `.gitignore`. The rules
+(`output/`, `.venv/`, `__pycache__/`, the private files above, …) are in
+`.git/info/exclude` at the repository root (`Projects/`), which git reads but
+never pushes. So they apply on this Mac only: a fresh clone has **no** ignore
+rules, and `git add -A` there would pick up `.venv/` and `output/` — copy
+those lines into the clone's own `.git/info/exclude` first. To share one
+specific report while `output/` stays ignored, add it by name with
+`git add -f PythonHotel/output/<file>.xlsx`; the rule itself is untouched.
+Once added, that file is tracked, so rebuilding it later shows up as a change
+to commit.
 
 ## Authentication
 
@@ -120,7 +131,7 @@ treated identically to omitting the field.
 syntax), so a plain string value on a `"#"` key is used as a convention
 instead — any array entry with no `"name"` key is treated as a comment and
 skipped by `load_hotels()` before validation, e.g. the first entry in the
-current file explaining the `nights: 2` default.
+current file explaining how the per-hotel `nights` field works.
 
 Check the `min_stay` / `max_stay` columns in the `data` sheet before guessing
 at this — see "Minimum-stay visibility" below.
@@ -235,6 +246,41 @@ This is what makes a hotel's minimum-stay rule visible without guessing: run
 `--raw` once for the hotel in question, or just check these two columns in
 the next `data` sheet.
 
+### Retrying past a minimum stay (`--probe-min-stay`, off by default)
+
+Some dates come back with real listings where **not one offer is bookable**,
+because every rate plan's `min_stay` is longer than the hotel's `nights`.
+Craveiral on 2026-10-08 is the example: 3 rooms, 13 offers, every one
+non-bookable, `min_stay` 2–7 against a 1-night query. Left alone, that date
+reads 0% available even though rooms are on sale.
+
+With `--probe-min-stay`, such a date is queried **once more**, at the
+shortest `min_stay` any of those offers asked for (2 nights, in that
+example):
+
+- **Only that date changes.** Every other date keeps the hotel's own
+  `nights`, and `hotels.json` is never touched.
+- **One retry, never more.** Whatever the retry returns replaces the first
+  attempt's rows for that date, so two rows for the same date and rate plan
+  never collide in `price_report.py` (whose key does not include `nights`).
+  If the retry returns nothing at all, the first attempt's rows are kept. It
+  never tries an even longer stay.
+- **An empty date is never retried.** A date with no listings at all (Amaria
+  on 2026-12-23) may be sold out or closed, and carries no `min_stay` to
+  retry with, so it costs no extra request.
+- **Every affected row is flagged.** `nights_overridden` is `True` in both
+  the `data` and `coverage` sheets, and `nights` holds the stay length
+  actually queried. The reports do not treat these rows differently yet: a
+  2-night price sits in the same grids as 1-night prices, so filter on the
+  flag when comparing prices.
+
+Tested on a 30-day run: 5 Craveiral dates (2026-10-04 to 10-08) went from 0
+bookable offers to 2–6 each, for 5 extra requests. None of the 52 empty
+dates across the other hotels was retried.
+
+`PROBE_MIN_STAY` in `hotel_rates.py` sets the default (`False`); the flag
+turns it on for one run. `run_daily.sh` does not pass it.
+
 ## Running
 
 First time on a machine, or after moving the folder, run `./setup.sh` once —
@@ -249,7 +295,9 @@ Useful flags: `--days` (check-in dates ahead — **defaults to `DAYS_AHEAD` in
 `hotel_rates.py`**), `--nights` (fallback stay length, only
 used for a hotel whose `hotels.json` entry sets no `"nights"` of its own),
 `--price total_price` (value shown in the wide grids), `--raw` (dump JSON
-responses to `output/raw/<hotel>/<date>.json`), `--hotels path.json`.
+responses to `output/raw/<hotel>/<date>.json`; a retried date also writes
+`<date>_retry<N>n.json`), `--hotels path.json`, `--probe-min-stay` (retry a
+date blocked only by minimum stay — see "Retrying past a minimum stay").
 
 `--days` and `--nights` are for one-off runs. To change the size of *every*
 run, including the scheduled one, edit `DAYS_AHEAD` in `hotel_rates.py` and
@@ -257,7 +305,9 @@ each hotel's `"nights"` in `hotels.json` — `run_daily.sh` deliberately passes
 neither flag, so those are the single source of truth.
 
 Budget roughly `DAYS_AHEAD × properties × REQUEST_DELAY` for a run — at the
-settings in the repo today that is about 20 minutes.
+settings in the repo today (240 × 6 × 0.5 s) that is about 12 minutes of
+pauses, plus the time each response takes. D-EDGE costs a second request per
+date, and so does each date retried with `--probe-min-stay`.
 
 Exit code is `0` only when every request succeeded; `1` if any failed. A run in
 which nothing could be queried at all writes nothing, so a broken job cannot
@@ -295,6 +345,7 @@ Three payload quirks worth knowing, all handled:
 .venv/bin/python price_report.py availability --by checkin
 .venv/bin/python price_report.py changes --threshold 10
 .venv/bin/python price_report.py changes --flips
+.venv/bin/python price_report.py sales --summary
 ```
 
 Reports print to the terminal by default. To get a file instead:
@@ -338,32 +389,66 @@ property with a single category can only ever read 0% or 100% — which is
 exactly what Hortas do Rio did: 38 dates reporting "100% available" when the
 truth ranged from 29% to 100%.
 
-So availability is **units on sale ÷ total rooms**:
+So availability is **units on sale ÷ total rooms**, and occupancy is
+**1 − availability**. Both are per hotel and per check-in date: units summed
+across the hotel's room types, divided by room counts summed the same way.
+
+The engines publish stock (`min_availability`) but never the total, so each
+room type's count is inferred as **the most units it was seen with at once**
+— bookable or not, since a min-stay-blocked offer still reports its stock.
+The question is *over which runs*:
 
 ```python
-pr.capacity(df)           # units per (hotel, room_type_code)
-pr.capacity_by_hotel(df)  # the denominator, per hotel
-pr.availability_rate(df, basis="units")   # default
+pr.capacity(df)                           # over every run in the history
+pr.capacity_by_hotel(df)                  #   ...summed per hotel
+pr.run_capacity(df, run_date, 20, rooms)  # over ONE run, with fallback
+pr.availability_rate(df, basis="units")   # CLI report - uses capacity()
 pr.availability_rate(df, basis="types")   # the old reading, for comparison
 ```
 
-The engines publish stock (`min_availability`) but never the denominator, so
-capacity is inferred as **the most ever seen on sale at once**, across the
-whole history. That is a floor, not a certainty — a room never simultaneously
-bookable is invisible — but it is self-correcting as history accrues, and it
-means availability can never exceed 100% by construction. Against ground truth
-it lands close:
+**All history (`capacity`) never forgets.** Vale Palheiro's Villa Terracotta
+was on sale for one week (seen 2026-09-04 to 09-06 only), yet kept Vale
+Palheiro at 13 rooms after it disappeared: a date with 9 villas on sale read
+69% available (9/13) when the hotel was really offering 12 (75%). A
+renumbering is worse. If Vale Palheiro merged 9 one-unit villas into 3
+three-unit room types, the 9 dead codes would keep counting next to the 3 new
+ones — 22 rooms instead of 13, permanently. The same goes for any room a hotel
+retires or downsizes.
 
-| Hotel | Inferred | Actual | Room types |
-| --- | --- | --- | --- |
-| Praia do Canal | 51 | ~54 | 7 |
-| Craveiral | 37 | ~36 | 6 |
-| Amaria | 10 | 10 | 10 |
-| Hortas do Rio | 7 | ? | 1 |
+**One run (`run_capacity`) is what the presentation report uses.** Per room
+type, the most units it showed on any check-in date of the latest run; a
+known room type that run never listed counts **0**. Retired, downsized and
+renumbered rooms drop out on the next run by themselves — the renumbering
+above reads the true count, not 22. This relies on the run being wide enough
+to catch each room at full stock somewhere in its window, which far-off dates
+usually provide. So a hotel whose latest run had listings on fewer than
+`ROOM_COUNT_MIN_DAYS` (20, in `build_report.py`) dates — a short `--days` run,
+or a property closed for most of the window — **falls back to all history**
+for that report. It counts dates *with listings*, not dates queried: a closed
+date says nothing about how many rooms a hotel has, and Pensão Agrícola was
+queried on 30 dates in one test but listed on only 4.
+
+Either way the count is an estimate, not a fact. It misses a room never on
+sale in the window measured, and it can also come out a little *above* the
+real number, because it trusts each engine's own stock count — Craveiral and
+Praia do Canal both read a room or two high. Counts as of the 2026-09-13 run:
+
+| Hotel | All history | Latest run | Actual | Room types |
+| --- | --- | --- | --- | --- |
+| Praia do Canal | 55 | 55 | ~54 | 7 |
+| Craveiral | 38 | 38 | ~36 | 6 |
+| Vale Palheiro | 13 | 12 | 12 on sale | 13 |
+| Amaria | 10 | 10 | 10 | 10 |
+| Pensão Agrícola | 7 | 6 | ? | 7 |
+| Hortas do Rio | 7 | 7 | ? | 1 |
+
+Vale Palheiro's gap is Villa Terracotta. Pensão Agrícola's is a room Cloudbeds
+lists only as unavailable, so it is registered but never had an offer.
 
 Where the true number is known, set it in `HOTEL_CAPACITY` in
-`price_report.py` and it wins — either a plain total (the inferred split is
-scaled to match) or a `{room_type_code: units}` dict.
+`price_report.py` and it wins over both — either a plain total (the inferred
+split is scaled to match) or a `{room_type_code: units}` dict, where `0`
+retires a room type outright.
 
 **Amaria is unaffected**, and correctly so: each of its "room types" is one
 named physical room (`Suite 1`, `Junior Suite 2`), so units and types agree
@@ -405,10 +490,28 @@ Palheiro** rather than a flat hotel list:
     that anchor exists yet - expected until there's enough history behind it
   - a bigger break, then two optional, independently-switchable sections
     (see below): **ADVERTISED PRICES** and **ESTIMATED SOLD PRICES**
+- **Number of rooms** — the room count behind every Availability % and
+  Occupancy % figure. One block per hotel: its rooms down the side, the count
+  each room is given in column B (the hotel's total — the Summary's "Rooms
+  known" — on the block's header row), then the units each room showed on
+  each check-in date of the latest run. The block title says which basis the
+  hotel is on. A retired room keeps its row (the registry never deletes) and
+  reads 0.
 - **Data latest / previous / 7 runs ago** — the tidy rows for drilling in.
 
 Flags: `--days` (date columns — defaults to `REPORT_DAYS` in
 `build_report.py`), `--compare-to YYYY-MM-DD`, `--out`, `--dir`.
+
+**One room count per report.** The count is measured once, from the latest
+run (see "Availability counts rooms, not room types"), and every run the
+report compares — the previous run and each trend anchor — is measured
+against that same count. So a move in the trend tables is a change in rooms
+sold, never partly a change in how many rooms a hotel is counted as having.
+An older run that had more units of a room than today's count allows (Villa
+Terracotta on 2026-09-04) is capped at today's count, so no run reads above
+100% available. Tomorrow's report re-measures from tomorrow's run.
+`ROOM_COUNT_MIN_DAYS` near the top of `build_report.py` sets the fallback
+threshold, and the terminal output names any hotel that fell back.
 
 `--days` only changes one run. To change the default width of every report,
 including the scheduled one, edit `REPORT_DAYS` near the top of
