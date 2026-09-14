@@ -295,6 +295,10 @@ BIG_MOVE = 0.10  # 10% - threshold at which a ratio cell also gets a fill
 BETTER_AVAIL_FONT = Font(size=10, color="1E7B34")   # less available than VP (fuller) = green
 BETTER_PRICE_FONT = BETTER_AVAIL_FONT               # cheaper than VP = same green, not a darker shade
 REF_BOLD_FONT = Font(size=10, bold=True, color=INK)  # VP's own best/worst day - bold, no colour change
+# Summary table's Occupancy % column only: the single fullest hotel of the
+# run, VP included - green like BETTER_AVAIL_FONT, plus bold to mark it out
+# as the outright highest rather than merely "better than VP".
+BEST_AVAIL_BOLD_FONT = Font(size=10, bold=True, color="1E7B34")
 
 # Availability is held as a fraction (0.30 = 30%), so a 50% -> 30% move
 # differences to 0.20. Percentage points are written scaled by 100 so the cell
@@ -477,33 +481,40 @@ def metrics_for_run(df, rooms, coverage, run_date, dates, cap) -> dict[str, pd.D
 # ==========================================================================
 
 def write_section(ws, row: int, title: str, note: str = "", width: int = 12,
-                  fill: PatternFill | None = None) -> int:
-    """A full-width heading bar. Returns the next free row."""
-    ws.cell(row=row, column=1, value=title).font = SECTION_FONT
-    for c in range(1, width + 1):
+                  fill: PatternFill | None = None, col: int = 1) -> int:
+    """A full-width heading bar. Returns the next free row.
+
+    `col` shifts the whole bar sideways - for a block placed next to
+    another one (see the SUMMARY OCCUPANCY side table) rather than below it.
+    """
+    ws.cell(row=row, column=col, value=title).font = SECTION_FONT
+    for c in range(col, col + width):
         ws.cell(row=row, column=c).fill = fill or SECTION_FILL
     ws.row_dimensions[row].height = 20
     row += 1
     if note:
-        cell = ws.cell(row=row, column=1, value=note)
+        cell = ws.cell(row=row, column=col, value=note)
         cell.font = SUB_FONT
         row += 1
     return row
 
 
-def write_date_header(ws, row: int, dates, label: str = "Hotel") -> None:
+def write_date_header(ws, row: int, dates, label: str = "Hotel", col: int = 1) -> None:
     """Date column headers, with Saturday/Sunday tinted - the calendar
     weekend, and the first thing anyone looks for. (The date in each column
     is the check-in night, so a guest staying through a Saturday/Sunday
     weekend typically checks in on the Saturday - but tinting Friday/Saturday
     to reflect that reads as the wrong weekend at a glance, so this tints
-    the actual weekend days instead.)"""
-    head = ws.cell(row=row, column=1, value=label)
+    the actual weekend days instead.)
+
+    `col` is the label column; date columns follow it - see write_section.
+    """
+    head = ws.cell(row=row, column=col, value=label)
     head.font = HEAD_FONT
     head.fill = HEAD_FILL
     head.border = BOX
     for i, d in enumerate(dates):
-        cell = ws.cell(row=row, column=2 + i, value=d.strftime("%d %b"))
+        cell = ws.cell(row=row, column=col + 1 + i, value=d.strftime("%d %b"))
         cell.font = HEAD_FONT
         cell.alignment = Alignment(horizontal="center")
         cell.fill = WEEKEND_FILL if d.weekday() in (5, 6) else HEAD_FILL
@@ -511,7 +522,8 @@ def write_date_header(ws, row: int, dates, label: str = "Hotel") -> None:
     ws.row_dimensions[row].height = 18
 
 
-def _apply_vs_reference_styling(ws, first_row: int, table: pd.DataFrame, dates, mode: str) -> None:
+def _apply_vs_reference_styling(ws, first_row: int, table: pd.DataFrame, dates, mode: str,
+                                col: int = 1) -> None:
     """Recolour an already-written table relative to REFERENCE_HOTEL's SAME
     DAY value - a whole day's spread across every hotel must be known before
     any one cell in it can be styled, so this is a second pass over columns,
@@ -545,8 +557,8 @@ def _apply_vs_reference_styling(ws, first_row: int, table: pd.DataFrame, dates, 
         day_values = table[d].dropna()
         day_min = day_values.min() if len(day_values) else None
         day_max = day_values.max() if len(day_values) else None
-        col = 2 + c
-        ref_cell = ws.cell(row=ref_row, column=col)
+        data_col = col + 1 + c
+        ref_cell = ws.cell(row=ref_row, column=data_col)
 
         if mode == "availability":
             if day_min is not None and vp_value <= day_min:
@@ -577,11 +589,11 @@ def _apply_vs_reference_styling(ws, first_row: int, table: pd.DataFrame, dates, 
                     continue
                 better = value < vp_value if mode in ("availability", "lowest_price") else value > vp_value
                 if better:
-                    ws.cell(row=first_row + r, column=col).font = other_font
+                    ws.cell(row=first_row + r, column=data_col).font = other_font
 
 
 def write_table(ws, row: int, table: pd.DataFrame, dates, number_format: str,
-                compare_mode: str | None = None) -> tuple[int, int]:
+                compare_mode: str | None = None, col: int = 1) -> tuple[int, int]:
     """Write one hotels x dates block.
 
     `compare_mode` (None, "availability", "occupancy", "lowest_price",
@@ -590,21 +602,24 @@ def write_table(ws, row: int, table: pd.DataFrame, dates, number_format: str,
     value - see _apply_vs_reference_styling. Only meaningful when the
     table's rows really are hotels (not e.g. room names).
 
+    `col` places the whole block starting at that column instead of A - for
+    a table sitting beside another one rather than below it.
+
     Returns (first_data_row, next_free_row) so later blocks can point at it
     without assuming where it ended up.
     """
-    write_date_header(ws, row, dates)
+    write_date_header(ws, row, dates, col=col)
     first = row + 1
     for r, hotel in enumerate(table.index):
         is_ref = hotel == REFERENCE_HOTEL
-        label = ws.cell(row=first + r, column=1, value=hotel)
+        label = ws.cell(row=first + r, column=col, value=hotel)
         label.font = HOTEL_FONT
         label.border = BOX
         if is_ref:
             label.fill = REFERENCE_FILL
         for c, d in enumerate(dates):
             value = table.loc[hotel, d] if d in table.columns else None
-            cell = ws.cell(row=first + r, column=2 + c)
+            cell = ws.cell(row=first + r, column=col + 1 + c)
             if pd.notna(value):
                 cell.value = float(value)
                 if is_ref:
@@ -617,7 +632,7 @@ def write_table(ws, row: int, table: pd.DataFrame, dates, number_format: str,
             cell.border = BOX
             cell.alignment = Alignment(horizontal="center")
     if compare_mode:
-        _apply_vs_reference_styling(ws, first, table, dates, compare_mode)
+        _apply_vs_reference_styling(ws, first, table, dates, compare_mode, col=col)
     return first, first + len(table.index) + 1
 
 
@@ -630,21 +645,28 @@ def write_table(ws, row: int, table: pd.DataFrame, dates, number_format: str,
 # genuinely sold-out room - looks identical to one price_report.py has never
 # heard of, unless something here actually checks for it.
 #
-# Two different questions, two different tools:
-#   MINIMUM NIGHTS table   per hotel PER DAY, from just the one run being
-#                          reported on - the strictest requirement any room
-#                          revealed that day (see metrics_for_run above).
-#   "Minimum stay!" column per hotel, using the WHOLE collected history - a
-#                          room can reveal its true requirement on one day
-#                          and stay invisible on every other, so a single
-#                          day's snapshot alone would miss it.
+# One question, checked once, from the LATEST run only: is the nights value
+# currently configured for each hotel (hotels.json) still enough to catch
+# every room's true rate? A room whose OWN minimum-stay rule needs more
+# nights than that never has a bookable offer, and - unlike a genuinely
+# sold-out room - looks identical to one price_report.py has never heard of,
+# unless something here actually checks for it.
 #
-# Both reduce a room's several rate plans to ONE number the same way: the
-# LEAST demanding one it has ever shown (min_stay), because a room only
-# needs ONE satisfiable rate plan to have a bookable offer at all - a
-# stricter sibling rate plan existing alongside it is normal, not a problem
-# (confirmed on Craveiral room 4: rate plans requiring 1, 3, 4 and 7 nights
-# all sit side by side on the same date; querying 1 night is still fine).
+# The MINIMUM NIGHTS table (see metrics_for_run above) already computes, per
+# hotel per day of the reported window, the strictest requirement any room
+# revealed on the LATEST run - and reduces a room's several rate plans to
+# ONE number the same way: the LEAST demanding one it showed that day
+# (min_stay), because a room only needs ONE satisfiable rate plan to have a
+# bookable offer at all - a stricter sibling rate plan existing alongside it
+# is normal, not a problem (confirmed on Craveiral room 4: rate plans
+# requiring 1, 3, 4 and 7 nights all sit side by side on the same date;
+# querying 1 night is still fine). The Summary's "Minimum stay!" warning
+# (hotels_needing_more_nights, below) reads off that SAME table, so a hotel
+# is only flagged for something the latest run itself proves is still true
+# today, on a date still ahead of it - never for a requirement an older run
+# once observed but the current configuration and current listings no
+# longer show (a room retired, a season that has passed, a rule the hotel
+# has since relaxed).
 # ==========================================================================
 
 def hotel_nights_config() -> dict[str, int]:
@@ -658,29 +680,27 @@ def hotel_nights_config() -> dict[str, int]:
             for h in hotels}
 
 
-def rooms_excluded_by_min_stay(df, nights_config: dict) -> set:
-    """Hotel names with at least one (room, check-in date) - anywhere in the
-    whole collected history - whose least-demanding rate plan on THAT DATE
-    still needed more nights than that hotel is currently configured to
-    query for.
+def hotels_needing_more_nights(min_stay_table: pd.DataFrame, nights_config: dict) -> set:
+    """Hotel names where at least one date in the MINIMUM NIGHTS table (the
+    LATEST run, over the reported/future window - see metrics_for_run) needs
+    more nights than that hotel is currently configured to query for.
 
-    Reduced per (room, date) FIRST, not straight to a room's all-time
-    cheapest option: a minimum-stay rule is often date-dependent (a season,
-    a weekend), so collapsing across dates before comparing would hide a
-    real, currently-active exclusion on a stricter date just because the
-    same room was more lenient on some unrelated one. Confirmed live on
-    Craveiral: every room's all-time-cheapest min_stay is 1, so the old
-    all-time-min version never flagged it - but several rooms needed 2
-    nights specifically for 2026-10-05 to 10-08, which this version catches.
+    Deliberately the exact same check write_min_stay_table uses to fill a
+    cell red - this is that table's own red cells, rolled up to one
+    per-hotel flag for the Summary block, so the two can never disagree.
+    Nothing outside the latest run is consulted: a hotel is flagged only for
+    a requirement the CURRENT scrape still shows on a date still ahead of
+    it, not for something an earlier run once observed.
     """
-    if "min_stay" not in df:
-        return set()
-    per_room_day = (df.dropna(subset=["min_stay"])
-                      .groupby(["hotel", "room_type_code", "checkin"])["min_stay"].min())
     flagged = set()
-    for (hotel, _code, _checkin), least_demanding in per_room_day.items():
+    if min_stay_table is None or min_stay_table.empty:
+        return flagged
+    for hotel in min_stay_table.index:
         configured = nights_config.get(hotel)
-        if configured is not None and configured < least_demanding:
+        if configured is None:
+            continue
+        row = min_stay_table.loc[hotel].dropna()
+        if len(row) and (row > configured).any():
             flagged.add(hotel)
     return flagged
 
@@ -822,7 +842,7 @@ def write_delta_table(ws, row: int, cur_table, anchor_table, dates, hotels,
 # ==========================================================================
 
 SUMMARY_COLS = [
-    ("Hotel", 26), ("Availability %", 15), ("vs prev", 10),
+    ("Hotel", 26), ("Occupancy %", 15), ("vs prev", 10),
     ("Lowest price", 14), ("vs prev", 10), ("Median lowest", 14),
     ("Highest price", 14), ("Rooms on sale", 14), ("Rooms known", 13),
     ("Dates on sale", 14), ("Nights", 9), ("Min-stay check", 16),
@@ -840,7 +860,7 @@ def _horizon(table, dates, days=SUMMARY_DAYS):
 def rooms_known(cap: pd.DataFrame, hotel: str) -> int | None:
     """How many physical rooms this hotel is counted as having.
 
-    This is the denominator behind Availability %, so showing it next to
+    This is the denominator behind Occupancy % (and Availability %), so showing it next to
     "Rooms on sale" makes the percentage self-explanatory: 1 of 51 reads very
     differently from 1 of 7. Counting room *types* here would understate it
     badly - Praia do Canal has 7 types but ~55 rooms - so it sums the same
@@ -853,6 +873,74 @@ def rooms_known(cap: pd.DataFrame, hotel: str) -> int | None:
     return int(round(float(counts.sum())))
 
 
+def _bold_summary_extreme(ws, first_row, hotels, values_by_hotel, col_idx, pick) -> None:
+    """Bold whichever hotel(s) hold the `pick` (min or max) of one Summary
+    column across every hotel shown - NOT relative to REFERENCE_HOTEL, since
+    "the cheapest hotel" or "the dearest hotel" is a fact about all of them,
+    not something only worth knowing relative to one property. Ties are all
+    bolded together, same convention as the reference-hotel best/worst-day
+    styling elsewhere.
+    """
+    key = col_idx - 1  # `values` is 0-indexed; SUMMARY_COLS is 1-indexed.
+    nums = [v[key] for v in values_by_hotel.values()
+            if v[key] is not None and pd.notna(v[key])]
+    if not nums:
+        return
+    target = pick(nums)
+    for r, hotel in enumerate(hotels):
+        v = values_by_hotel.get(hotel, [None] * len(SUMMARY_COLS))[key]
+        if v is not None and pd.notna(v) and v == target:
+            ws.cell(row=first_row + r, column=col_idx).font = REF_BOLD_FONT
+
+
+def _apply_summary_conditional_formatting(ws, first_row, hotels, values_by_hotel) -> None:
+    """Second pass over the already-written Summary rows - a whole column's
+    spread across every hotel must be known before any one cell in it can be
+    styled, same reason _apply_vs_reference_styling runs after write_table's
+    row-by-row pass.
+
+    Occupancy % (col 2): deliberately its OWN rule, not the daily OCCUPANCY
+    % table's (mode="occupancy") - REFERENCE_HOTEL's FILL is never touched
+    here, it always keeps its plain reference colour regardless of where it
+    ranks. Only text changes:
+      - REFERENCE_HOTEL: black unless it is the single fullest hotel shown
+        here (ties count), in which case its text turns green AND bold.
+      - every other hotel: green text when its own figure beats
+        REFERENCE_HOTEL's, same as before; ADDITIONALLY bold when it is
+        also the single fullest hotel shown (not merely fuller than
+        REFERENCE_HOTEL - the outright highest). A hotel at or below
+        REFERENCE_HOTEL's figure is untouched, plain black, whether or not
+        it is REFERENCE_HOTEL.
+    Nothing here is red - "lowest" carries no styling in this column.
+
+    Lowest price / Median lowest / Highest price (cols 4, 6, 7): NOT
+    reference-relative - whichever hotel actually has the lowest figure (or,
+    for Highest price, the highest) gets bold text, regardless of whether
+    that happens to be REFERENCE_HOTEL.
+    """
+    COL_OCCUPANCY = 2
+    occ = {h: values_by_hotel[h][COL_OCCUPANCY - 1] for h in hotels if h in values_by_hotel}
+    vp = occ.get(REFERENCE_HOTEL)
+    if vp is not None and pd.notna(vp):
+        all_occ = [v for v in occ.values() if v is not None and pd.notna(v)]
+        day_max = max(all_occ)
+        for r, hotel in enumerate(hotels):
+            v = occ.get(hotel)
+            if v is None or pd.isna(v):
+                continue
+            is_top = v >= day_max
+            cell = ws.cell(row=first_row + r, column=COL_OCCUPANCY)
+            if hotel == REFERENCE_HOTEL:
+                if is_top:
+                    cell.font = BEST_AVAIL_BOLD_FONT
+            elif v > vp:
+                cell.font = BEST_AVAIL_BOLD_FONT if is_top else BETTER_AVAIL_FONT
+
+    _bold_summary_extreme(ws, first_row, hotels, values_by_hotel, col_idx=4, pick=min)   # Lowest price
+    _bold_summary_extreme(ws, first_row, hotels, values_by_hotel, col_idx=6, pick=min)   # Median lowest
+    _bold_summary_extreme(ws, first_row, hotels, values_by_hotel, col_idx=7, pick=max)   # Highest price
+
+
 def write_summary(ws, row, cur, prev, dates, hotels, cap=None,
                   nights_config=None, excluded=None) -> int:
     for i, (name, width) in enumerate(SUMMARY_COLS, start=1):
@@ -863,46 +951,49 @@ def write_summary(ws, row, cur, prev, dates, hotels, cap=None,
         cell.alignment = Alignment(horizontal="center", wrap_text=True)
         ws.column_dimensions[get_column_letter(i)].width = width
     row += 1
+    first = row
 
+    values_by_hotel: dict[str, list] = {}
     for hotel in hotels:
-        av = _horizon(cur["availability"], dates).loc[hotel] if hotel in cur["availability"].index else pd.Series(dtype=float)
+        oc = _horizon(cur["occupancy"], dates).loc[hotel] if hotel in cur["occupancy"].index else pd.Series(dtype=float)
         lo = _horizon(cur["min_price"], dates).loc[hotel] if hotel in cur["min_price"].index else pd.Series(dtype=float)
         hi = _horizon(cur["max_price"], dates).loc[hotel] if hotel in cur["max_price"].index else pd.Series(dtype=float)
         rm = _horizon(cur["rooms"], dates).loc[hotel] if hotel in cur["rooms"].index else pd.Series(dtype=float)
 
-        p_av = p_lo = None
+        p_oc = p_lo = None
         if prev is not None:
-            pa = _horizon(prev["availability"], dates)
+            po = _horizon(prev["occupancy"], dates)
             pl = _horizon(prev["min_price"], dates)
-            if hotel in pa.index:
-                p_av = pa.loc[hotel].mean(skipna=True)
+            if hotel in po.index:
+                p_oc = po.loc[hotel].mean(skipna=True)
             if hotel in pl.index:
                 p_lo = pl.loc[hotel].min(skipna=True)
 
-        av_now = av.mean(skipna=True) if len(av) else None
+        oc_now = oc.mean(skipna=True) if len(oc) else None
         lo_now = lo.min(skipna=True) if len(lo) else None
         nights_value = (nights_config or {}).get(hotel)
         warning = "Minimum stay!" if excluded and hotel in excluded else None
 
         values = [
             hotel,
-            av_now,
+            oc_now,
             # Scaled to real percentage points - see PP_SCALE.
-            ((av_now - p_av) * PP_SCALE)
-            if (av_now is not None and p_av is not None and pd.notna(p_av)) else None,
+            ((oc_now - p_oc) * PP_SCALE)
+            if (oc_now is not None and p_oc is not None and pd.notna(p_oc)) else None,
             lo_now,
             (lo_now / p_lo - 1) if (lo_now is not None and p_lo not in (None, 0) and pd.notna(p_lo)) else None,
             lo.median(skipna=True) if len(lo) else None,
             hi.max(skipna=True) if len(hi) else None,
             rm.max(skipna=True) if len(rm) else None,
             rooms_known(cap, hotel) if cap is not None else None,
-            int(av.notna().sum()) if len(av) else 0,
+            int(oc.notna().sum()) if len(oc) else 0,
             nights_value,
             warning,
         ]
         formats = [None, PCT_FMT, PP_FMT, PRICE_FMT, CHANGE_FMT,
                    PRICE_FMT, PRICE_FMT, INT_FMT, INT_FMT, INT_FMT,
                    INT_FMT, None]
+        values_by_hotel[hotel] = values
 
         for i, (v, fmt) in enumerate(zip(values, formats), start=1):
             cell = ws.cell(row=row, column=i)
@@ -925,7 +1016,51 @@ def write_summary(ws, row, cur, prev, dates, hotels, cap=None,
             if hotel == REFERENCE_HOTEL:
                 cell.fill = REFERENCE_FILL
         row += 1
+
+    _apply_summary_conditional_formatting(ws, first, hotels, values_by_hotel)
     return row + 1
+
+
+# ==========================================================================
+# 4a. SUMMARY OCCUPANCY (12-period side table)
+# --------------------------------------------------------------------------
+# The Summary block above only looks SUMMARY_DAYS ahead - the window that
+# drives a decision today. This table sits beside it, not below it, and
+# trades that resolution for reach: the same Occupancy %, averaged over each
+# of the next several SUMMARY_DAYS-long periods back to back, so a hotel
+# that is fine in the next 30 days but filling up badly three periods out is
+# visible without opening the full OCCUPANCY % table and scanning 365 dates
+# by eye. It is exactly the OCCUPANCY % table's own numbers, just bucketed
+# instead of shown one day at a time - see occupancy_period_table.
+# ==========================================================================
+SUMMARY_SIDE_GAP_COLS = 2  # blank columns between the Summary table and this one
+SUMMARY_PERIODS = 12       # how many SUMMARY_DAYS-long periods it covers
+
+
+def _period_windows(dates, n_periods=SUMMARY_PERIODS, period_days=SUMMARY_DAYS):
+    """Up to `n_periods` consecutive, non-overlapping `period_days`-long
+    slices of `dates`, each as (start_date, dates_in_window). Stops early if
+    `dates` runs out first - a report run with fewer than
+    `n_periods * period_days` dates (a narrow --days) simply gets fewer
+    columns rather than an error."""
+    windows = []
+    for i in range(n_periods):
+        start = i * period_days
+        window = dates[start:start + period_days]
+        if not window:
+            break
+        windows.append((window[0], window))
+    return windows
+
+
+def occupancy_period_table(occ_table: pd.DataFrame, hotels, windows) -> pd.DataFrame:
+    """Hotels x period-start-date: mean Occupancy % over each `windows`
+    slice - same shape and meaning as `cur["occupancy"]`, just one column
+    per period instead of one per day, so it can be handed straight to
+    write_table / _apply_vs_reference_styling(mode="occupancy") unchanged.
+    """
+    cols = {start: occ_table[window].mean(axis=1, skipna=True) for start, window in windows}
+    return pd.DataFrame(cols).reindex(index=hotels)
 
 
 # ==========================================================================
@@ -1389,7 +1524,7 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs, ca
     cur = metrics_for_run(df, rooms, coverage, latest, dates, cap)
     prev = metrics_for_run(df, rooms, coverage, previous, dates, cap) if previous is not None else None
     nights_config = hotel_nights_config()
-    excluded = rooms_excluded_by_min_stay(df, nights_config)
+    excluded = hotels_needing_more_nights(cur["min_stay"], nights_config)
 
     runs = run_dates(df)
     # One entry per TREND_ANCHOR_DAYS value, so adding a third anchor needs
@@ -1412,6 +1547,12 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs, ca
     ws.column_dimensions["A"].width = LABEL_COL_WIDTH
     for i in range(len(dates)):
         ws.column_dimensions[get_column_letter(2 + i)].width = DATE_COL_WIDTH
+    # The SUMMARY OCCUPANCY side table's own "Hotel" label column lands on
+    # top of one of the date columns above (it sits beside the Summary
+    # block, well within the date tables' width) - widen that one column so
+    # hotel names are not clipped there.
+    period_start_col = len(SUMMARY_COLS) + SUMMARY_SIDE_GAP_COLS + 1
+    ws.column_dimensions[get_column_letter(period_start_col)].width = LABEL_COL_WIDTH
 
     # --- title ------------------------------------------------------------
     ws["A1"] = "Hotel rate monitor"
@@ -1426,10 +1567,40 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs, ca
     row = 4
 
     # --- summary ----------------------------------------------------------
-    row = write_section(ws, row, f"  SUMMARY — next {SUMMARY_DAYS} days",
-                        width=len(SUMMARY_COLS))
-    row = write_summary(ws, row, cur, prev, dates, hotels, cap,
-                        nights_config, excluded)
+    summary_row = write_section(ws, row, f"  SUMMARY — next {SUMMARY_DAYS} days",
+                                width=len(SUMMARY_COLS))
+    summary_row = write_summary(ws, summary_row, cur, prev, dates, hotels, cap,
+                                nights_config, excluded)
+
+    # --- summary occupancy (beside the summary, not below it) -------------
+    windows = _period_windows(dates)
+    period_dates = [start for start, _ in windows]
+    occ_periods = occupancy_period_table(cur["occupancy"], hotels, windows)
+    # The note sits ABOVE the title bar here (unlike every other section),
+    # so it reads before the coloured heading rather than being squeezed
+    # between the heading and the table. The whole block starts one row
+    # HIGHER than the Summary table (row - 1, not row): the note adds a row
+    # the Summary table doesn't have, so starting both blocks at the same
+    # row would push this table's Vale Palheiro row one below the Summary
+    # table's - starting a row earlier keeps the two tables' data rows
+    # aligned side by side.
+    note_cell = ws.cell(
+        row=row - 1, column=period_start_col,
+        value=f"Occupancy %, averaged over each following {SUMMARY_DAYS}-day period "
+        "back to back - same run and same figures as the OCCUPANCY % table "
+        "below, just bucketed instead of one day at a time. Colouring follows "
+        "that table's rule too: Vale Palheiro's cell fills green on its "
+        "fullest period, red on its emptiest; other hotels turn green text "
+        "when fuller than Vale Palheiro that period.")
+    note_cell.font = SUB_FONT
+    period_row = write_section(
+        ws, row,
+        f"  SUMMARY OCCUPANCY — next {SUMMARY_DAYS * len(windows)} days",
+        width=1 + len(period_dates), col=period_start_col)
+    _, period_row = write_table(ws, period_row, occ_periods, period_dates, PCT_FMT,
+                                compare_mode="occupancy", col=period_start_col)
+
+    row = max(summary_row, period_row)
 
     # Reserve space for the two (side-by-side) charts; they are added once
     # the tables they read from have been written and their positions are

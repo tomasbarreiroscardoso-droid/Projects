@@ -473,7 +473,13 @@ Palheiro** rather than a flat hotel list:
   reflows everything (`hotel_order` / `REFERENCE_HOTEL` in `build_report.py`
   are the only places that know this).
 - **Report**:
-  - a KPI summary per hotel over the next `SUMMARY_DAYS` days
+  - a KPI summary per hotel over the next `SUMMARY_DAYS` days, with its own
+    conditional formatting (see below) - and, beside it rather than below
+    it, **SUMMARY OCCUPANCY**: the same Occupancy % figure re-averaged over
+    each of the next 12 `SUMMARY_DAYS`-long periods back to back, so a
+    hotel that looks fine near-term but fills up badly a few months out is
+    visible without scanning the full OCCUPANCY % table by eye. Both
+    tables' Vale Palheiro rows are kept aligned to the same sheet row.
   - two charts side by side, bigger than before: occupancy on the left,
     lowest price on the right, both by check-in date. Vale Palheiro draws
     thick and in the report's own accent colour; everyone else draws thin,
@@ -569,6 +575,27 @@ applied only to these four - not Rooms available):
 - Highest price: no styling for other hotels. Vale Palheiro's own cell goes
   bold (no colour change) on its most expensive day.
 
+**The SUMMARY block uses its OWN rule** for the same four ideas, applied to
+30-day averages/extremes instead of one date at a time -
+`_apply_summary_conditional_formatting` in `build_report.py`, not
+`compare_mode` above:
+
+- **Occupancy %**: Vale Palheiro's cell never changes fill - it always keeps
+  its plain reference tint, best or worst. Only its text moves: black
+  unless it is the single fullest hotel of the run (ties count), in which
+  case it turns green **and bold**. Every other hotel keeps the usual green
+  text when it beats Vale Palheiro, and turns bold too if it happens to be
+  the outright fullest hotel - not merely fuller than Vale Palheiro, the
+  actual maximum. Nothing in this column is ever red.
+- **Lowest price / Median lowest / Highest price**: not reference-relative
+  at all - whichever hotel actually has the lowest figure (or, for Highest
+  price, the highest) gets bold text, regardless of whether that happens to
+  be Vale Palheiro.
+- **SUMMARY OCCUPANCY** (the 12-period side table) is the exception: it
+  reuses the per-day OCCUPANCY % rule above unchanged (Vale Palheiro's cell
+  fills green/red on its best/worst period), since it is that table's own
+  figures, just bucketed into periods instead of shown one day at a time.
+
 **Lowest/highest price only ever count a *bookable* offer.** A rate plan can
 come back non-bookable (its own `min_stay` is longer than the stay queried)
 alongside a bookable one for the same room/date - Vale Palheiro's Casita
@@ -592,19 +619,29 @@ ambiguous between "sold out" and "stay too short":
   the hotel's configured `nights` (`hotels.json`) is below it.
 - The Summary table's **Nights** column (bold, black - a configured fact, not
   a measured value) shows what each hotel is currently set to; **Min-stay
-  check**, right beside it, reads "Minimum stay!" in red when *any* room, on
-  *any specific check-in date* anywhere in the whole collected history, had
-  every rate plan on offer that day needing more nights than the current
-  setting. Reduced per (room, date) first, not straight to a room's
-  all-time-cheapest option - a minimum-stay rule is often date-dependent (a
-  season, a weekend), so collapsing across dates before comparing would
-  hide a real, currently-active exclusion on a stricter date just because
-  the same room was lenient on some unrelated one. This was a real bug in
-  an earlier version (fixed): it compared against a room's all-time
-  cheapest option, so Craveiral silently passed even though several of its
-  rooms need 2 nights specifically for 2026-10-05 to 10-08, while its
-  history elsewhere always showed a 1-night option - confirmed live, the
-  fixed version now flags it correctly.
+  check**, right beside it, reads "Minimum stay!" in red when the MINIMUM
+  NIGHTS table above shows at least one date still needing more nights than
+  the current setting. It is literally that table's own red cells rolled up
+  to one flag per hotel (`hotels_needing_more_nights` in `build_report.py`),
+  so the two can never disagree, and it inherits the same per-(room, date)
+  reduction: a room needs only one satisfiable rate plan on a given day, so
+  what matters is its *least*-demanding rate plan on that specific date,
+  then the *strictest* such requirement across a hotel's rooms that day - a
+  minimum-stay rule is often date-dependent (a season, a weekend), so
+  collapsing across dates before comparing would hide a real exclusion on a
+  stricter date just because the same room was lenient elsewhere.
+- **Reads the LATEST run only, deliberately** - not the whole collected
+  history. A requirement an older run once observed but that has since gone
+  quiet in the data (the room retired, the season passed, the rule relaxed)
+  is not flagged; only what the current scrape itself still proves, on a
+  date still ahead of it. An earlier version instead scanned every run ever
+  collected, which could flag a hotel indefinitely over something years out
+  of date with nothing on the sheet to say whether it was still true. Fixed
+  after a live case on Amaria: three runs in early September 2026 once
+  showed several dates needing 3 nights against its 2-night setting, but by
+  the next run that room/date pair had simply dropped out of the scrape
+  entirely - under the old rule Amaria stayed flagged with no way to tell
+  why from the sheet alone.
 
 One thing worth knowing: **"vs previous" in the Summary block means the
 previous *run*, not literally yesterday.** If a day is missed, comparing

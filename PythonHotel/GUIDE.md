@@ -67,11 +67,13 @@ and each hotel's `nights` in `hotels.json`.
 #### `build_report.py` — **builds the Excel report**
 
 Reads every workbook `hotel_rates.py` has ever written and produces one
-polished `output/report_<date>.xlsx`: KPI summary, two charts, six
-hotels × dates tables, a trend comparison, optional per-room price grids,
-and a **Number of rooms** sheet showing how many rooms each hotel is counted
-as having. This is the file that produces the thing you actually open and
-show to people.
+polished `output/report_<date>.xlsx`: a KPI summary (plus **SUMMARY
+OCCUPANCY** beside it - the same Occupancy % figure re-averaged over 12
+consecutive `SUMMARY_DAYS`-long periods, so a hotel filling up months out is
+visible without scanning the full table), two charts, six hotels × dates
+tables, a trend comparison, optional per-room price grids, and a **Number of
+rooms** sheet showing how many rooms each hotel is counted as having. This is
+the file that produces the thing you actually open and show to people.
 
 It never touches the network — it only reads what is already in `output/`,
 so it is safe to run as many times as you like.
@@ -80,7 +82,7 @@ so it is safe to run as many times as you like.
 | --- | --- | --- |
 | `REPORT_DAYS` | **200** | **The big one.** How many check-in date columns wide every TABLE is. |
 | `CHART_DAYS` | 202 | How many date columns the two CHARTS draw. Kept below `REPORT_DAYS` on purpose — a line across a whole year is unreadable. |
-| `SUMMARY_DAYS` | 204 | The near-term window averaged into the Summary KPIs and the trend comparison. |
+| `SUMMARY_DAYS` | 204 | The near-term window averaged into the Summary KPIs and the trend comparison - also the length of each of the 12 periods in SUMMARY OCCUPANCY. |
 | `TREND_ANCHOR_DAYS` | 205 | How far back the trend comparison looks. Add an entry and it grows a section; headings follow automatically. |
 | `ROOM_COUNT_MIN_DAYS` | 225 | `20`. How many dates with listings a hotel needs in the latest run before its room count is read from that run. Below it, the count uses all history instead. See "How does the report know how many rooms a hotel has?" below. |
 | `INCLUDE_ADVERTISED_PRICES` | 234 | `True`/`False`. Show the per-room "what it costs right now" grids. |
@@ -88,10 +90,12 @@ so it is safe to run as many times as you like.
 | `REFERENCE_HOTEL` | 275 | Which hotel sorts first and is highlighted everywhere as the baseline. `"Vale Palheiro"`. |
 | `ACCENT` | 246 | The report's main colour. |
 | `ACCENT_ADVERTISED` / `ACCENT_SALES` | 264 / 258 | The two optional sections' header colours. |
-| `CHART_HEIGHT_CM` / `CHART_WIDTH_CM` | 319–320 | Size of the two charts, in centimetres. |
-| `BIG_MOVE` / `BIG_MOVE_PP` | 288 / 303 | How large a change has to be before a cell is coloured. The captions in the report quote whatever you set here. |
-| `DATE_COL_WIDTH` / `LABEL_COL_WIDTH` | 314–315 | Column widths. |
-| `METRICS` | 353 | The five hotels × dates tables, their number formats, and their explanatory captions. |
+| `CHART_HEIGHT_CM` / `CHART_WIDTH_CM` | 323–324 | Size of the two charts, in centimetres. |
+| `BIG_MOVE` / `BIG_MOVE_PP` | 288 / 307 | How large a change has to be before a cell is coloured. The captions in the report quote whatever you set here. |
+| `DATE_COL_WIDTH` / `LABEL_COL_WIDTH` | 318–319 | Column widths. |
+| `METRICS` | 357 | The five hotels × dates tables, their number formats, and their explanatory captions. |
+| `SUMMARY_PERIODS` | 1037 | `12`. How many `SUMMARY_DAYS`-long periods SUMMARY OCCUPANCY covers (360 days by default). |
+| `SUMMARY_SIDE_GAP_COLS` | 1036 | `2`. Blank columns between the Summary table and SUMMARY OCCUPANCY beside it. |
 
 ```bash
 ./.venv/bin/python build_report.py                       # normal
