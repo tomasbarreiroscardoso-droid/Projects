@@ -218,7 +218,7 @@ HOTELS = [
 # so this value is what it uses. `--days N` overrides it for one run only.
 # Cost: roughly DAYS_AHEAD x number of hotels requests, REQUEST_DELAY apart,
 # so 240 days x 6 hotels at 0.5s is about 12 minutes of pauses alone.
-DAYS_AHEAD = 240
+DAYS_AHEAD = 280
 
 # Default stay length, used ONLY for a hotel whose hotels.json entry has no
 # "nights" of its own (or has "nights": null). A hotel's own value always
