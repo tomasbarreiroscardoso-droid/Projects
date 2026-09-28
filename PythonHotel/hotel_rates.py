@@ -129,11 +129,10 @@ Usage:
 #     NIGHTS          DEFAULT stay length, used only for a hotel whose
 #                     hotels.json entry has no "nights" of its own. Every
 #                     hotel currently sets its own, so this is a fallback.
-#     PROBE_MIN_STAY  OFF by default; --probe-min-stay turns it on for one
-#                     run. When on, a date with real listings but nothing
-#                     bookable purely because of min_stay is retried once at
-#                     the shortest min_stay seen - see the comment above the
-#                     constant for the full rationale.
+#     PROBE_MIN_STAY  ON by default. When on, a date with real listings but
+#                     nothing bookable purely because of min_stay is retried
+#                     once at the shortest min_stay seen - see the comment
+#                     above the constant for the full rationale.
 #     ADULTS 2 / CHILDREN 0     occupancy asked for
 #     CURRENCY EUR / LANGUAGE en
 #     REQUEST_DELAY 0.5         seconds between requests - politeness
@@ -218,7 +217,7 @@ HOTELS = [
 # so this value is what it uses. `--days N` overrides it for one run only.
 # Cost: roughly DAYS_AHEAD x number of hotels requests, REQUEST_DELAY apart,
 # so 240 days x 6 hotels at 0.5s is about 12 minutes of pauses alone.
-DAYS_AHEAD = 280
+DAYS_AHEAD = 40
 
 # Default stay length, used ONLY for a hotel whose hotels.json entry has no
 # "nights" of its own (or has "nights": null). A hotel's own value always
@@ -256,7 +255,7 @@ NIGHTS = 3
 # report can tell a probed row (a different stay length, not directly
 # comparable on price) apart from an ordinary one. See README.md ->
 # "Minimum-stay visibility".
-PROBE_MIN_STAY = False
+PROBE_MIN_STAY = True
 ADULTS = 2
 CHILDREN = 0
 CURRENCY = "EUR"

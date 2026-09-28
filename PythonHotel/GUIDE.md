@@ -32,7 +32,7 @@ each run is a new file — so a bad run can never destroy history.
 | --- | --- | --- |
 | `DAYS_AHEAD` | **221** | **The big one.** How many check-in dates ahead to collect. |
 | `NIGHTS` | 226 | Fallback stay length, used only for a hotel that sets no `nights` of its own in `hotels.json`. Currently nothing reaches it. |
-| `PROBE_MIN_STAY` | 259 | `False`. When `True` (or with `--probe-min-stay`), a date that has listings but nothing bookable only because of minimum stay is asked for once more at that minimum. Affected rows are marked `nights_overridden`. |
+| `PROBE_MIN_STAY` | 259 | `True`. When on, a date that has listings but nothing bookable only because of minimum stay is asked for once more at that minimum. Affected rows are marked `nights_overridden`. |
 | `ADULTS` / `CHILDREN` | 260–261 | The occupancy to ask prices for. `2` adults, `0` children. |
 | `CURRENCY` / `LANGUAGE` | 262–263 | `EUR`, `en`. |
 | `REQUEST_DELAY` | 265 | Seconds to wait between requests. `0.5` — politeness. Raising it makes runs slower but gentler. |

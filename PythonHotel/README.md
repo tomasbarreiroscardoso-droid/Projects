@@ -278,8 +278,10 @@ Tested on a 30-day run: 5 Craveiral dates (2026-10-04 to 10-08) went from 0
 bookable offers to 2–6 each, for 5 extra requests. None of the 52 empty
 dates across the other hotels was retried.
 
-`PROBE_MIN_STAY` in `hotel_rates.py` sets the default (`False`); the flag
-turns it on for one run. `run_daily.sh` does not pass it.
+`PROBE_MIN_STAY` in `hotel_rates.py` sets the default (`True`); the
+`--probe-min-stay` flag is only needed if that default is ever turned back
+off. `run_daily.sh` does not pass it, so it runs with whatever the constant
+is set to.
 
 ## Running
 
