@@ -769,7 +769,7 @@ def write_divider(ws, row: int, width: int, extra_gap: bool = False) -> int:
 
 
 def write_delta_table(ws, row: int, cur_table, anchor_table, dates, hotels,
-                      mode: str = "ratio") -> tuple[int, int]:
+                      mode: str = "ratio", invert: bool = False) -> tuple[int, int]:
     """Hotels x dates, same shape as the plain value tables above - but each
     cell is the CHANGE against an earlier run instead of today's raw value.
 
@@ -779,8 +779,15 @@ def write_delta_table(ws, row: int, cur_table, anchor_table, dates, hotels,
     enough to it exists yet - every cell is then simply left blank rather
     than guessed. `mode="pp"` differences and scales to percentage points
     (availability, already a fraction); `mode="ratio"` divides (prices).
+
+    `invert=True` swaps the green/red convention: green for a DECREASE,
+    red for an INCREASE. Needed for `cur["availability"]`, which is the
+    UNSOLD share of rooms (on sale / capacity) - a rise there means MORE
+    empty rooms, i.e. LOWER occupancy, so it is bad, not good. Price (the
+    other caller) keeps the default: up = green.
     """
     big = BIG_MOVE_PP if mode == "pp" else BIG_MOVE
+    good_sign = -1 if invert else 1
     write_date_header(ws, row, dates)
     first = row + 1
     for r, hotel in enumerate(hotels):
@@ -814,17 +821,21 @@ def write_delta_table(ws, row: int, cur_table, anchor_table, dates, hotels,
             big_move = False
             if isinstance(cell.value, float):
                 v = cell.value
-                if v <= -big:
+                # `good` is the move's direction once `invert` is applied -
+                # positive means favourable, negative means unfavourable,
+                # regardless of whether that was a rise or a fall in `v`.
+                good = good_sign * v
+                if good <= -big:
                     cell.font = Font(size=10, color="7A150C", bold=True)
                     cell.fill = BIG_DOWN_FILL
                     big_move = True
-                elif v >= big:
+                elif good >= big:
                     cell.font = Font(size=10, color="14561F", bold=True)
                     cell.fill = BIG_UP_FILL
                     big_move = True
-                elif v < 0:
+                elif good < 0:
                     cell.font = DOWN_FONT
-                elif v > 0:
+                elif good > 0:
                     cell.font = UP_FONT
 
             if is_ref and not empty and not big_move:
@@ -1635,9 +1646,11 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs, ca
         f"{REFERENCE_HOTEL} shown first and tinted, as everywhere else. Each "
         "table below is the same shape as Availability % / Lowest price "
         "above (hotels x dates), but the cell is the CHANGE against an "
-        "earlier run instead of today's raw value - green up, red down, "
-        f"filled when the move exceeds {BIG_MOVE:.0%} / {BIG_MOVE_PP:g} pp, "
-        "exactly like the measured tables' own logic.",
+        "earlier run instead of today's raw value - green for the "
+        "favourable direction, red for the unfavourable one (price: up is "
+        "green; availability: down is green, since more availability means "
+        f"lower occupancy), filled when the move exceeds {BIG_MOVE:.0%} / "
+        f"{BIG_MOVE_PP:g} pp.",
         width=1 + len(dates))
 
     for back, anchor_run, anchor_cur in trend_anchors:
@@ -1646,13 +1659,15 @@ def build(df, rooms, coverage, dates, latest, previous, out_path, extra_runs, ca
                  else f"no run close enough to {label} ago yet")
         row = write_section(
             ws, row, f"  AVAILABILITY % — {basis}",
-            "Today − anchor, in percentage points.  Green up, red down; "
+            "Today − anchor, in percentage points.  Green down, red up - "
+            "more availability means MORE unsold rooms, i.e. LOWER "
+            f"occupancy, so a rise is the unfavourable direction here; "
             f"filled when the move exceeds {BIG_MOVE_PP:g} pp.",
             width=1 + len(dates))
         _, row = write_delta_table(
             ws, row, cur["availability"],
             anchor_cur["availability"] if anchor_cur is not None else None,
-            dates, hotels, mode="pp")
+            dates, hotels, mode="pp", invert=True)
 
         row = write_section(
             ws, row, f"  LOWEST PRICE — {basis}",
